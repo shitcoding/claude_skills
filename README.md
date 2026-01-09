@@ -31,6 +31,41 @@ uv tool install claude-code-tools
 
 **Documentation:** [tmux-cli instructions & FAQ](https://github.com/pchalasani/claude-code-tools/blob/main/docs/tmux-cli-instructions.md)
 
+### ticktick
+
+Manage TickTick tasks and projects from the command line with OAuth2 authentication and secure credential storage.
+
+**Features:**
+- List, create, update, complete, and abandon tasks
+- Manage projects (lists)
+- Batch operations for multiple tasks
+- JSON output for scripting
+- Secure credential storage via `pass` (GPG-encrypted)
+
+**Requirements:**
+- [Bun](https://bun.sh/) - JavaScript runtime
+- [pass](https://www.passwordstore.org/) - password manager for secure credential storage
+- TickTick OAuth app credentials ([create here](https://developer.ticktick.com/manage))
+
+**Installation:**
+```bash
+# Install bun (macOS/Linux)
+curl -fsSL https://bun.sh/install | bash
+
+# Install pass (macOS)
+brew install pass
+
+# Install dependencies
+cd ~/.claude/skills/ticktick && bun install
+
+# Store credentials in pass
+pass insert ticktick-cli/client-id
+pass insert ticktick-cli/client-secret
+
+# Authenticate
+bun run scripts/ticktick.ts auth
+```
+
 ## Setup
 
 Skills must be symlinked to `~/.claude/skills/` directory.
