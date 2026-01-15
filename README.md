@@ -31,6 +31,38 @@ uv tool install claude-code-tools
 
 **Documentation:** [tmux-cli instructions & FAQ](https://github.com/pchalasani/claude-code-tools/blob/main/docs/tmux-cli-instructions.md)
 
+### codex-cli-interactive
+
+Run interactive Codex CLI sessions for code review, security audits, refactoring, and multi-turn conversations with OpenAI Codex.
+
+**Features:**
+- Interactive Codex sessions via tmux-cli isolation
+- Configurable model settings (gpt-5-codex, gpt-5)
+- Adjustable reasoning effort and sandbox modes
+- Task-specific presets for common workflows
+- Multi-turn conversation support
+
+**Requirements:**
+- [tmux](https://github.com/tmux/tmux) (v3+) - terminal multiplexer
+- [tmux-cli](https://github.com/pchalasani/claude-code-tools) - CLI tool for tmux control
+- [Codex CLI](https://github.com/openai/codex) - OpenAI's coding assistant CLI
+- OpenAI API credentials configured
+
+**Installation:**
+```bash
+# Install tmux (macOS)
+brew install tmux
+
+# Install tmux-cli via uv
+uv tool install claude-code-tools
+
+# Install Codex CLI
+npm install -g @openai/codex
+
+# Configure OpenAI credentials
+export OPENAI_API_KEY="your-api-key"
+```
+
 ### ticktick
 
 Manage TickTick tasks and projects from the command line with OAuth2 authentication and secure credential storage.
