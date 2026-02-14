@@ -94,6 +94,10 @@ Otherwise, use defaults and proceed immediately.
   # Check output for errors like "Error loading config" or shell prompt without Codex UI
   # Only proceed to step 3 if Codex is confirmed running
   ```
+- **MCP Server Failures Block Codex**: If you see warnings like "⚠ MCP startup incomplete (failed: figma)" and Codex doesn't respond to ANY prompts (including "/help" or "Hello"), MCP server initialization failure is blocking Codex.
+  - **Solution**: Temporarily disable MCP servers in `~/.codex/config.toml` by removing or commenting out the `[mcp.servers.*]` sections
+  - **Root cause**: Failed MCP server initialization (e.g., missing credentials, network issues) can prevent Codex from processing input
+  - After completing your work, restore the original config to avoid breaking user's normal workflow
 - **Codex exits unexpectedly**: capture output to see error, restart from step 1
 - **Pane closes**: check `tmux list-panes -t tmux-cli`, recreate pane and update `CODEX_PANE`
 - **wait_idle hangs/times out**: increase idle-time (+15s), or use `tmux-cli interrupt --pane=$CODEX_PANE` then retry
