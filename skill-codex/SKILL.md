@@ -22,7 +22,8 @@ Valid `model_reasoning_effort` values: `none`, `minimal`, `low`, `medium`, `high
 ```bash
 # 1. Setup (run each line separately)
 tmux has-session -t tmux-cli 2>/dev/null || tmux new-session -d -s tmux-cli
-CODEX_PANE=$(tmux split-window -t tmux-cli -h -P -F '#{session_name}:#{window_index}.#{pane_index}' zsh)
+CODEX_WIN="codex-$(head -c4 /dev/urandom | xxd -p)"
+CODEX_PANE=$(tmux new-window -t tmux-cli -n "$CODEX_WIN" -d -P -F '#{session_name}:#{window_name}.#{pane_index}' zsh)
 echo "PANE: $CODEX_PANE"
 
 # 2. Start Codex
@@ -37,10 +38,12 @@ tmux-cli capture --pane=$CODEX_PANE
 # 4. End session (MANDATORY - always run when done)
 tmux-cli send "/exit" --pane=$CODEX_PANE && \
 tmux-cli wait_idle --pane=$CODEX_PANE --idle-time=5.0 && \
-tmux kill-pane -t $CODEX_PANE
+tmux kill-window -t "tmux-cli:$CODEX_WIN"
 ```
 
-**IMPORTANT: You MUST always run step 4 to close the tmux pane when the Codex session is finished.** Never leave the pane open after the task is complete.
+**IMPORTANT: You MUST always run step 4 to close the tmux window when the Codex session is finished.** Never leave the window open after the task is complete.
+
+**WHY WINDOWS INSTEAD OF PANES**: Each Codex session runs in its own dedicated tmux window with a unique name (e.g., `codex-a1b2c3d4`). This prevents a race condition where concurrent sessions break each other — pane indices shift when any pane closes, but window names are stable.
 
 ## Task Presets
 
@@ -99,29 +102,29 @@ Otherwise, use defaults and proceed immediately.
   - **Root cause**: Failed MCP server initialization (e.g., missing credentials, network issues) can prevent Codex from processing input
   - After completing your work, restore the original config to avoid breaking user's normal workflow
 - **Codex exits unexpectedly**: capture output to see error, restart from step 1
-- **Pane closes**: check `tmux list-panes -t tmux-cli`, recreate pane and update `CODEX_PANE`
+- **Window closes**: check `tmux list-windows -t tmux-cli`, recreate window and update `CODEX_WIN`/`CODEX_PANE`
 - **wait_idle hangs/times out**: increase idle-time (+15s), or use `tmux-cli interrupt --pane=$CODEX_PANE` then retry
 - **Auth issues**: user must fix credentials outside session
 
 ## Cleanup (MANDATORY)
 
-**You MUST close the Codex pane when the session is complete.** Always run step 4 after all interactions are done:
+**You MUST close the Codex window when the session is complete.** Always run step 4 after all interactions are done:
 ```bash
 tmux-cli send "/exit" --pane=$CODEX_PANE && \
 tmux-cli wait_idle --pane=$CODEX_PANE --idle-time=5.0 && \
-tmux kill-pane -t $CODEX_PANE
+tmux kill-window -t "tmux-cli:$CODEX_WIN"
 ```
 
-If the pane is already dead (Codex crashed or exited on its own), still ensure cleanup:
+If the window is already dead (Codex crashed or exited on its own), still ensure cleanup:
 ```bash
-tmux kill-pane -t $CODEX_PANE 2>/dev/null
+tmux kill-window -t "tmux-cli:$CODEX_WIN" 2>/dev/null
 ```
 
-**Never leave a Codex pane running after the task is finished.**
+**Never leave a Codex window running after the task is finished.**
 
 ## Notes
 
 - Use short flags: `-m` (model), `-c` (config), `-s` (sandbox)
-- Never use `tmux-cli launch` - use `tmux split-window -t tmux-cli`
+- Never use `tmux-cli launch` - use `tmux new-window -t tmux-cli -n <unique-name>` for isolation
 - Default idle-time is 30s; use 60s for security audits or complex tasks
 - Summarize Codex findings for user after capturing output
