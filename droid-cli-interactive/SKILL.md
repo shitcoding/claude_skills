@@ -240,7 +240,7 @@ tmux-cli interrupt --pane=$DROID_PANE
 | `Ctrl+C` x2 | Exit Droid |
 | `@` | Mention files |
 | `/` | Commands menu |
-| `!` | Toggle Bash mode |
+| excl. mark | Toggle Bash mode |
 
 ## Configuration Overrides
 
