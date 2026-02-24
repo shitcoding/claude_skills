@@ -12,10 +12,11 @@ Run Droid CLI sessions via tmux-cli for code review, security audits, refactorin
 - `tmux` (v3+) and `tmux-cli` installed and on PATH
 - Droid CLI (`droid`) installed and authenticated with Factory API key (`FACTORY_API_KEY`)
 - `zsh` shell available
+- `python3` available (for hook scripts)
 
 ## Quick Start (Default Config)
 
-**Defaults**: `gemini-3-pro-preview` model, **max available** reasoning (`high` for Gemini), `Auto (Off)` autonomy, `30s` idle-time.
+**Defaults**: `gemini-3-pro-preview` model, **max available** reasoning (`high` for Gemini), `Auto (Off)` autonomy.
 
 **IMPORTANT**: Always select the highest available reasoning effort for the chosen model: `max` for Claude, `xhigh` for GPT, `high` for Gemini/others. See the table below for each model's max level.
 
@@ -33,40 +34,85 @@ Run Droid CLI sessions via tmux-cli for code review, security audits, refactorin
 | `gpt-5.2-codex` | GPT-5.2-Codex | none, low, medium, high, xhigh | medium |
 
 ```bash
-# 1. Setup (run each line separately)
+# Resolve the skill's scripts directory (needed for event-driven detection)
+# The skill directory is either in the repo or symlinked from ~/.claude/skills/
+DROID_SKILL_DIR="$(dirname "$(readlink -f "$(echo ~/.claude/skills/droid-cli-interactive/SKILL.md)" 2>/dev/null || echo ~/.claude/skills/droid-cli-interactive/SKILL.md)")"
+DROID_SCRIPTS="$DROID_SKILL_DIR/scripts"
+
+# 1. Install hooks (one-time, idempotent - safe to run every time)
+"$DROID_SCRIPTS/droid-install-hooks.sh"
+
+# 2. Setup tmux window (run each line separately)
 tmux has-session -t tmux-cli 2>/dev/null || tmux new-session -d -s tmux-cli
 DROID_WIN="droid-$(head -c4 /dev/urandom | xxd -p)"
 DROID_PANE=$(tmux new-window -t tmux-cli -n "$DROID_WIN" -d -P -F '#{session_name}:#{window_name}.#{pane_index}' zsh)
-echo "PANE: $DROID_PANE"
+DROID_PANE_ID=$(tmux display-message -t $DROID_PANE -p '#{pane_id}')
+echo "PANE: $DROID_PANE  PANE_ID: $DROID_PANE_ID"
 
-# 2. Start Droid (with optional model override - see "Model Override" section)
+# 3. Start Droid (with optional model override - see "Model Override" section)
 tmux-cli send "cd \"$(pwd)\" && droid" --pane=$DROID_PANE && \
 tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0
 
-# 3. Verify launch (MANDATORY)
+# 4. Verify launch (MANDATORY)
 tmux-cli capture --pane=$DROID_PANE
 # Check output contains Droid ASCII banner and model indicator at bottom
 # Only proceed if Droid is confirmed running
 
-# 4. (Optional) Set max reasoning if model supports higher than current
+# 5. (Optional) Set max reasoning if model supports higher than current
 #    Use Tab to cycle reasoning. Gemini 3 Pro max is "high" (already default).
 #    For other models, cycle Tab until max is reached, then capture to verify.
 
-# 5. Send prompt + capture (repeat for each interaction)
+# 6. Send prompt + wait for response + capture (repeat for each interaction)
 tmux-cli send "<YOUR_PROMPT>" --pane=$DROID_PANE && \
-tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0 && \
+("$DROID_SCRIPTS/droid-wait-event.sh" "$DROID_PANE_ID" 300 || \
+ tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0) && \
 tmux-cli capture --pane=$DROID_PANE
 
-# 6. End session (MANDATORY - always run when done)
+# 7. End session (MANDATORY - always run when done)
 tmux send-keys -t $DROID_PANE C-c && sleep 0.3 && tmux send-keys -t $DROID_PANE C-c && \
 sleep 2 && tmux kill-window -t "tmux-cli:$DROID_WIN"
 ```
 
-**IMPORTANT: You MUST always run step 6 to close the tmux window when the Droid session is finished.** Never leave the window open after the task is complete.
+**IMPORTANT: You MUST always run step 7 to close the tmux window when the Droid session is finished.** Never leave the window open after the task is complete.
 
 **EXIT METHOD**: Droid uses **double Ctrl+C** (rapid, <1s apart) to exit. NOT `/exit`.
 
 **WHY WINDOWS INSTEAD OF PANES**: Each Droid session runs in its own dedicated tmux window with a unique name (e.g., `droid-a1b2c3d4`). This prevents a race condition where concurrent sessions break each other - pane indices shift when any pane closes, but window names are stable.
+
+## Event-Driven Detection
+
+Instead of fixed idle-time polling, this skill uses Droid hooks + `tmux wait-for` for instant response detection with graceful fallback.
+
+### How It Works
+
+1. **Hook installation** (step 1): `droid-install-hooks.sh` adds Stop/SubagentStop/Notification hooks to `~/.factory/settings.json`. Idempotent - safe to run repeatedly.
+2. **Nonce-per-wait**: Each `droid-wait-event.sh` call creates a unique nonce written to `/tmp/droid-event-state/<pane_id>/nonce`. This avoids `tmux wait-for` parity issues (repeated signals on the same channel toggle state rather than accumulate).
+3. **Hook fires**: When Droid finishes a response, the hook script (`droid-hook-signal.sh`) walks PID ancestry to discover which tmux pane it belongs to, reads the nonce, and signals `tmux wait-for -S "droid-<nonce>"`.
+4. **Fallback**: If the hook doesn't fire within timeout (e.g., hooks not installed, PID discovery fails), `droid-wait-event.sh` exits non-zero and the `||` triggers `tmux-cli wait_idle` as fallback.
+
+### Concurrency Safety
+
+- **Unique nonce per wait**: Each concurrent instance uses its own channel name - no cross-talk.
+- **PID ancestry discovery**: Each hook process discovers its own tmux pane independently - no shared state.
+- **One-time hook install**: No per-session settings.json modification - no race conditions on the config file.
+- **State isolation**: Each pane has its own state directory at `/tmp/droid-event-state/<pane_id>/`.
+
+### Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/droid-install-hooks.sh` | One-time idempotent hook installation |
+| `scripts/droid-hook-signal.sh` | Hook dispatcher (called by Droid) |
+| `scripts/droid-wait-event.sh` | Blocking waiter with timeout |
+
+### Timeout Configuration
+
+The default timeout for `droid-wait-event.sh` is 300s (5 min). For long tasks, increase it:
+```bash
+"$DROID_SCRIPTS/droid-wait-event.sh" "$DROID_PANE_ID" 600  # 10 min timeout
+```
+
+If the event-driven wait times out, the fallback `wait_idle` uses a shorter idle-time (30s default, 60s for security audits).
 
 ## Model Override
 
@@ -94,7 +140,7 @@ If user requests a non-default model, use the `/model` slash command after Droid
 19. Droid Core (MiniMax M2.5)
 
 ```bash
-# After step 3 (verify launch), switch model:
+# After step 4 (verify launch), switch model:
 # 1. Open model selector
 tmux-cli send "/model" --pane=$DROID_PANE && sleep 2
 
@@ -126,23 +172,24 @@ If user doesn't specify a model, use the default (`gemini-3-pro-preview`) and sk
 
 ## Task Presets
 
-| Task | Model | Reasoning | Autonomy | Idle Time |
-|------|-------|-----------|----------|-----------|
-| Code review | `gemini-3-pro-preview` | `high` (max avail) | Off | 30s |
-| Security audit | `gemini-3-pro-preview` | `high` (max avail) | Off | 60s |
-| Refactoring (analyze) | `gemini-3-pro-preview` | `high` (max avail) | Off | 30s |
-| Refactoring (apply) | `gemini-3-pro-preview` | `high` (max avail) | Low/Medium | 30s |
-| Full access | `claude-opus-4-6` | `max` | High | 60s |
+| Task | Model | Reasoning | Autonomy | Wait Timeout |
+|------|-------|-----------|----------|--------------|
+| Code review | `gemini-3-pro-preview` | `high` (max avail) | Off | 300s |
+| Security audit | `gemini-3-pro-preview` | `high` (max avail) | Off | 600s |
+| Refactoring (analyze) | `gemini-3-pro-preview` | `high` (max avail) | Off | 300s |
+| Refactoring (apply) | `gemini-3-pro-preview` | `high` (max avail) | Low/Medium | 300s |
+| Full access | `claude-opus-4-6` | `max` | High | 600s |
 
 **Permission required**: Ask user before using autonomy levels above Off.
 
 ## Core Operations
 
-### Send + Capture Pattern
+### Send + Wait + Capture Pattern
 Always chain these together:
 ```bash
 tmux-cli send "<PROMPT>" --pane=$DROID_PANE && \
-tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0 && \
+("$DROID_SCRIPTS/droid-wait-event.sh" "$DROID_PANE_ID" 300 || \
+ tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0) && \
 tmux-cli capture --pane=$DROID_PANE
 ```
 
@@ -183,14 +230,16 @@ Otherwise, use defaults and proceed immediately.
 ## Error Handling
 
 - **CRITICAL: After starting Droid, ALWAYS capture the pane output and verify Droid launched successfully** before sending any prompts. Look for the ASCII banner and model indicator (e.g., `Gemini 3 Pro (High)`) at the bottom of the screen.
-- **Droid exits unexpectedly**: capture output to see error, restart from step 1
-- **Window closes**: check `tmux list-windows -t tmux-cli`, recreate window and update `DROID_WIN`/`DROID_PANE`
+- **Event-driven wait fails**: Falls back to `wait_idle` automatically via `||` operator. No manual intervention needed.
+- **Droid exits unexpectedly**: capture output to see error, restart from step 2
+- **Window closes**: check `tmux list-windows -t tmux-cli`, recreate window and update `DROID_WIN`/`DROID_PANE`/`DROID_PANE_ID`
 - **wait_idle hangs/times out**: increase idle-time (+15s), or use `tmux-cli interrupt --pane=$DROID_PANE` then retry
 - **Auth issues**: user must set `FACTORY_API_KEY` environment variable
+- **Hook installation issues**: Run `"$DROID_SCRIPTS/droid-install-hooks.sh"` manually. Check `~/.factory/settings.json` for hook entries. Backup is at `~/.factory/settings.json.pre-hooks-backup`.
 
 ## Cleanup (MANDATORY)
 
-**You MUST close the Droid window when the session is complete.** Always run step 6 after all interactions are done:
+**You MUST close the Droid window when the session is complete.** Always run step 7 after all interactions are done:
 ```bash
 tmux send-keys -t $DROID_PANE C-c && sleep 0.3 && tmux send-keys -t $DROID_PANE C-c && \
 sleep 2 && tmux kill-window -t "tmux-cli:$DROID_WIN"
@@ -208,5 +257,5 @@ tmux kill-window -t "tmux-cli:$DROID_WIN" 2>/dev/null
 - Droid interactive mode has NO `--model` CLI flag; use `/model` slash command after launch to switch
 - For non-interactive use, prefer `droid exec -m MODEL_ID` with `--auto` level
 - Never use `tmux-cli launch` - use `tmux new-window -t tmux-cli -n <unique-name>` for isolation
-- Default idle-time is 30s; use 60s for security audits or complex tasks
 - Summarize Droid findings for user after capturing output
+- Hook state files are in `/tmp/droid-event-state/` and cleaned up automatically
