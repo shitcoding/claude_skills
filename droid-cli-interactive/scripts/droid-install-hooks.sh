@@ -22,7 +22,9 @@ if [ ! -f "$SETTINGS" ]; then
     echo '{}' > "$SETTINGS"
 fi
 
-# Check if hooks already installed (idempotent)
+# Check if hooks already installed with CORRECT format (idempotent)
+# Correct format: {"hooks": [{"type": "command", "command": "..."}]}
+# Old wrong format: {"command": "..."} - must be replaced
 if python3 -c "
 import json, sys
 with open('$SETTINGS') as f:
@@ -30,8 +32,13 @@ with open('$SETTINGS') as f:
 hooks = cfg.get('hooks', {})
 if 'Stop' in hooks:
     entries = hooks['Stop']
-    if isinstance(entries, list) and any('$HOOK_SCRIPT' in str(e) for e in entries):
-        sys.exit(0)
+    if isinstance(entries, list) and len(entries) > 0:
+        entry = entries[0]
+        # Check for correct nested format
+        if 'hooks' in entry and isinstance(entry['hooks'], list):
+            for h in entry['hooks']:
+                if h.get('type') == 'command' and h.get('command') == '$HOOK_SCRIPT':
+                    sys.exit(0)
 sys.exit(1)
 " 2>/dev/null; then
     echo "Hooks already installed"
@@ -46,6 +53,8 @@ if [ ! -f "$BACKUP" ]; then
 fi
 
 # Merge hooks using atomic temp+rename
+# Droid hook format: {"hooks": [{"type": "command", "command": "..."}]}
+# Notification also needs "matcher": "" to match all notifications
 python3 -c "
 import json, tempfile, os
 
@@ -55,10 +64,20 @@ hook_script = '$HOOK_SCRIPT'
 with open(settings_path) as f:
     cfg = json.load(f)
 
-hook_entry = {'command': hook_script}
+def make_hook_entry(cmd):
+    return {'hooks': [{'type': 'command', 'command': cmd}]}
+
+def make_hook_entry_with_matcher(cmd, matcher=''):
+    return {'matcher': matcher, 'hooks': [{'type': 'command', 'command': cmd}]}
+
 hooks = cfg.setdefault('hooks', {})
-for event in ['Stop', 'SubagentStop', 'Notification']:
-    hooks[event] = [hook_entry]
+
+# Stop and SubagentStop: lifecycle events, no matcher needed
+for event in ['Stop', 'SubagentStop']:
+    hooks[event] = [make_hook_entry(hook_script)]
+
+# Notification: needs matcher field (empty string = match all)
+hooks['Notification'] = [make_hook_entry_with_matcher(hook_script)]
 
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(settings_path))
 with os.fdopen(fd, 'w') as f:
