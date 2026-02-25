@@ -12,88 +12,57 @@ Run Droid CLI sessions via tmux-cli for code review, security audits, refactorin
 - `tmux` (v3+) and `tmux-cli` installed and on PATH
 - Droid CLI (`droid`) installed and authenticated with Factory API key (`FACTORY_API_KEY`)
 - `zsh` shell available
-- `python3` available (for hook scripts)
+- `python3` available (for hook and model scripts)
 
 ## Model Families
 
 When the user says "use Droid with Gemini/Codex/Claude/etc." (without specifying a version), resolve to the **best available model** in that family. Always use **max reasoning effort**.
 
-| Family | Trigger words | Best model | Position | Cost | Max Reasoning |
-|--------|--------------|------------|----------|------|---------------|
-| **Gemini** (default) | "gemini", "google" | Gemini 3.1 Pro | 14 | 0.8x | high |
-| **Codex** | "codex", "gpt", "openai" | GPT-5.3-Codex | 6 | 0.7x | xhigh |
-| **Claude** | "claude", "opus", "anthropic" | Opus 4.6 | 10 | 2x | max |
-| **Sonnet** | "sonnet" | Sonnet 4.6 | 8 | 1.2x | max |
-| **Droid** | "droid", "glm", "droid core" | Droid Core (GLM-5) | 17 | 0.4x | high |
+| Family | Trigger words | Model ID | Display name | Cost | Max Reasoning |
+|--------|--------------|----------|--------------|------|---------------|
+| **Gemini** (default) | "gemini", "google" | `gemini-3.1-pro-preview` | Gemini 3.1 Pro | 0.8x | high |
+| **Codex** | "codex", "gpt", "openai" | `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
+| **Claude** | "claude", "opus", "anthropic" | `claude-opus-4-6` | Opus 4.6 | 2x | max |
+| **Sonnet** | "sonnet" | `claude-sonnet-4-6` | Sonnet 4.6 | 1.2x | max |
+| **Droid** | "droid", "glm", "droid core" | `glm-5` | Droid Core (GLM-5) | 0.4x | high |
 
 **AVOID**: Opus 4.6 Fast Mode (12x credit cost) - never select this unless user explicitly says "fast mode".
 
-If user says just "run droid" / "launch droid" with no model preference → use **Gemini** family (default).
-If user says a specific model version (e.g., "GPT-5.2-Codex") → use that exact model, not the family best.
-If a newer/better model appears in a family in future Droid updates → prefer the newest highest-tier model in that family.
+If user says just "run droid" / "launch droid" with no model preference, use **Gemini** family (default).
+If user says a specific model version (e.g., "GPT-5.2-Codex"), use that exact model ID, not the family best.
+If a newer/better model appears in a family in future Droid updates, prefer the newest highest-tier model.
 
-## Quick Start (Default Config)
-
-**Defaults**: **Gemini** family (Gemini 3.1 Pro), **max reasoning** (high), `Auto (Off)` autonomy.
-
-**IMPORTANT**: Always select the highest available reasoning effort for the chosen model: `max` for Claude, `xhigh` for GPT, `high` for Gemini/others.
-
-**All available models** (with credit cost and selector position):
-
-| # | Name | Cost | Max Reasoning |
-|---|------|------|---------------|
-| 1 | GPT-5.1 | 0.5x | xhigh |
-| 2 | GPT-5.1-Codex | 0.5x | xhigh |
-| 3 | GPT-5.1-Codex-Max | 0.5x | xhigh |
-| 4 | GPT-5.2 | 0.7x | xhigh |
-| 5 | GPT-5.2-Codex | 0.7x | xhigh |
-| 6 | **GPT-5.3-Codex** | 0.7x | xhigh |
-| 7 | Sonnet 4.5 | 1.2x | max |
-| 8 | **Sonnet 4.6** | 1.2x | max |
-| 9 | Opus 4.5 | 2x | max |
-| 10 | **Opus 4.6** | 2x | max |
-| 11 | Opus 4.6 Fast Mode | **12x** | max |
-| 12 | Haiku 4.5 | 0.4x | high |
-| 13 | Gemini 3 Pro | 0.8x | high |
-| 14 | **Gemini 3.1 Pro** | 0.8x | high |
-| 15 | Gemini 3 Flash | 0.2x | high |
-| 16 | Droid Core (GLM-4.7) | 0.25x | high |
-| 17 | **Droid Core (GLM-5)** | 0.4x | high |
-| 18 | Droid Core (Kimi K2.5) | 0.25x | high |
-| 19 | Droid Core (MiniMax M2.5) | 0.12x | high |
-
-**Bold** = family best (what gets selected when user says the family name).
+## Quick Start
 
 ```bash
-# Resolve the skill's scripts directory (needed for event-driven detection)
-# The skill directory is either in the repo or symlinked from ~/.claude/skills/
+# Resolve the skill's scripts directory
 DROID_SKILL_DIR="$(dirname "$(readlink -f "$(echo ~/.claude/skills/droid-cli-interactive/SKILL.md)" 2>/dev/null || echo ~/.claude/skills/droid-cli-interactive/SKILL.md)")"
 DROID_SCRIPTS="$DROID_SKILL_DIR/scripts"
 
-# 1. Install hooks (one-time, idempotent - safe to run every time)
+# 1. Set model BEFORE launch (Droid reads ~/.factory/settings.json at startup)
+#    Use the Model ID and Max Reasoning from the Model Families table above
+#    Default: Gemini family
+"$DROID_SCRIPTS/droid-set-model.sh" "gemini-3.1-pro-preview" "high"
+
+# 2. Install hooks (one-time, idempotent - safe to run every time)
 "$DROID_SCRIPTS/droid-install-hooks.sh"
 
-# 2. Setup tmux window (run each line separately)
+# 3. Setup tmux window
 tmux has-session -t tmux-cli 2>/dev/null || tmux new-session -d -s tmux-cli
 DROID_WIN="droid-$(head -c4 /dev/urandom | xxd -p)"
 DROID_PANE=$(tmux new-window -t tmux-cli -n "$DROID_WIN" -d -P -F '#{session_name}:#{window_name}.#{pane_index}' zsh)
 DROID_PANE_ID=$(tmux display-message -t $DROID_PANE -p '#{pane_id}')
 echo "PANE: $DROID_PANE  PANE_ID: $DROID_PANE_ID"
 
-# 3. Start Droid
+# 4. Start Droid (it will use the model set in step 1)
 tmux-cli send "cd \"$(pwd)\" && droid" --pane=$DROID_PANE && \
 tmux-cli wait_idle --pane=$DROID_PANE --idle-time=30.0
 
-# 4. Verify launch (MANDATORY)
+# 5. Verify launch (MANDATORY)
 tmux-cli capture --pane=$DROID_PANE
-# Check output contains Droid ASCII banner and model indicator at bottom
-# Only proceed if Droid is confirmed running
-
-# 5. Switch to target model family (see "Model Override" section)
-#    Default family = Gemini → Gemini 3.1 Pro (position 14)
-#    Droid launches on Gemini 3 Pro (position 13), so press Down 1 time
-#    Then set max reasoning (see Model Override for full flow)
-#    Skip this step ONLY if user explicitly wants Gemini 3 Pro (not 3.1)
+# Check output contains Droid ASCII banner
+# Check bottom status bar shows correct model (e.g., "Gemini 3.1 Pro (High)")
+# Only proceed if Droid is confirmed running with the right model
 
 # 6. Send prompt + wait for response + capture (repeat for each interaction)
 tmux-cli send "<YOUR_PROMPT>" --pane=$DROID_PANE && \
@@ -112,13 +81,66 @@ sleep 2 && tmux kill-window -t "tmux-cli:$DROID_WIN"
 
 **WHY WINDOWS INSTEAD OF PANES**: Each Droid session runs in its own dedicated tmux window with a unique name (e.g., `droid-a1b2c3d4`). This prevents a race condition where concurrent sessions break each other - pane indices shift when any pane closes, but window names are stable.
 
+## Model Selection
+
+**Models are set via `~/.factory/settings.json` BEFORE launching Droid.** Do NOT use `/model` slash command or arrow key navigation - that approach is fragile and error-prone.
+
+```bash
+# Set model before launching Droid (step 1 in Quick Start)
+"$DROID_SCRIPTS/droid-set-model.sh" "<MODEL_ID>" "<REASONING>"
+```
+
+### Examples
+
+```bash
+# Gemini (default)
+"$DROID_SCRIPTS/droid-set-model.sh" "gemini-3.1-pro-preview" "high"
+
+# Codex
+"$DROID_SCRIPTS/droid-set-model.sh" "gpt-5.3-codex" "xhigh"
+
+# Claude
+"$DROID_SCRIPTS/droid-set-model.sh" "claude-opus-4-6" "max"
+
+# Sonnet
+"$DROID_SCRIPTS/droid-set-model.sh" "claude-sonnet-4-6" "max"
+
+# Droid Core
+"$DROID_SCRIPTS/droid-set-model.sh" "glm-5" "high"
+```
+
+### All Available Model IDs
+
+| Model ID | Display Name | Cost | Max Reasoning |
+|----------|-------------|------|---------------|
+| `gpt-5.1` | GPT-5.1 | 0.5x | xhigh |
+| `gpt-5.1-codex` | GPT-5.1-Codex | 0.5x | xhigh |
+| `gpt-5.1-codex-max` | GPT-5.1-Codex-Max | 0.5x | xhigh |
+| `gpt-5.2` | GPT-5.2 | 0.7x | xhigh |
+| `gpt-5.2-codex` | GPT-5.2-Codex | 0.7x | xhigh |
+| `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
+| `claude-sonnet-4-5` | Sonnet 4.5 | 1.2x | max |
+| `claude-sonnet-4-6` | Sonnet 4.6 | 1.2x | max |
+| `claude-opus-4-5` | Opus 4.5 | 2x | max |
+| `claude-opus-4-6` | Opus 4.6 | 2x | max |
+| `claude-haiku-4-5-20251001` | Haiku 4.5 | 0.4x | high |
+| `gemini-3-pro-preview` | Gemini 3 Pro | 0.8x | high |
+| `gemini-3.1-pro-preview` | Gemini 3.1 Pro | 0.8x | high |
+| `gemini-3-flash-preview` | Gemini 3 Flash | 0.2x | high |
+| `glm-4.7` | Droid Core (GLM-4.7) | 0.25x | high |
+| `glm-5` | Droid Core (GLM-5) | 0.4x | high |
+| `kimi-k2.5` | Droid Core (Kimi K2.5) | 0.25x | high |
+| `minimax-m2.5` | Droid Core (MiniMax M2.5) | 0.12x | high |
+
+**NOTE**: When running multiple Droid instances with different models, call `droid-set-model.sh` before each `droid` launch. The script modifies `~/.factory/settings.json` which Droid reads at startup. Launch Droid immediately after setting the model.
+
 ## Event-Driven Detection
 
 Instead of fixed idle-time polling, this skill uses Droid hooks + `tmux wait-for` for instant response detection with graceful fallback.
 
 ### How It Works
 
-1. **Hook installation** (step 1): `droid-install-hooks.sh` adds Stop/SubagentStop/Notification hooks to `~/.factory/settings.json`. Idempotent - safe to run repeatedly.
+1. **Hook installation** (step 2): `droid-install-hooks.sh` adds Stop/SubagentStop/Notification hooks to `~/.factory/settings.json`. Idempotent - safe to run repeatedly.
 2. **Nonce-per-wait**: Each `droid-wait-event.sh` call creates a unique nonce written to `/tmp/droid-event-state/<pane_id>/nonce`. This avoids `tmux wait-for` parity issues (repeated signals on the same channel toggle state rather than accumulate).
 3. **Hook fires**: When Droid finishes a response, the hook script (`droid-hook-signal.sh`) walks PID ancestry to discover which tmux pane it belongs to, reads the nonce, and signals `tmux wait-for -S "droid-<nonce>"`.
 4. **Fallback**: If the hook doesn't fire within timeout (e.g., hooks not installed, PID discovery fails), `droid-wait-event.sh` exits non-zero and the `||` triggers `tmux-cli wait_idle` as fallback.
@@ -134,8 +156,9 @@ Instead of fixed idle-time polling, this skill uses Droid hooks + `tmux wait-for
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/droid-set-model.sh` | Set model and reasoning in settings.json before launch |
 | `scripts/droid-install-hooks.sh` | One-time idempotent hook installation |
-| `scripts/droid-hook-signal.sh` | Hook dispatcher (called by Droid) |
+| `scripts/droid-hook-signal.sh` | Hook dispatcher (called by Droid on Stop/Notification) |
 | `scripts/droid-wait-event.sh` | Blocking waiter with timeout |
 
 ### Timeout Configuration
@@ -147,60 +170,15 @@ The default timeout for `droid-wait-event.sh` is 300s (5 min). For long tasks, i
 
 If the event-driven wait times out, the fallback `wait_idle` uses a shorter idle-time (30s default, 60s for security audits).
 
-## Model Override
-
-Use `/model` after Droid launches to switch to the target model. **Always required** - even for the default Gemini family, you must switch from Gemini 3 Pro (Droid's launch default at position 13) to Gemini 3.1 Pro (best-in-family at position 14).
-
-### Navigation from launch position (Gemini 3 Pro, position 13)
-
-| Target family | Target model | Arrows from pos 13 | Reasoning Down presses |
-|--------------|-------------|---------------------|----------------------|
-| **Gemini** (default) | Gemini 3.1 Pro (14) | Down x1 | 4 (to reach "high") |
-| **Codex** | GPT-5.3-Codex (6) | Up x7 | 4 (to reach "xhigh") |
-| **Claude** | Opus 4.6 (10) | Up x3 | 4 (to reach "max") |
-| **Sonnet** | Sonnet 4.6 (8) | Up x5 | 4 (to reach "max") |
-| **Droid** | GLM-5 (17) | Down x4 | 4 (to reach "high") |
-
-**NOTE**: If you already switched models earlier in this session, the cursor starts at the **current model's position**, not position 13. Capture the pane first to see what model is active, then recalculate arrows.
-
-```bash
-# After step 4 (verify launch), switch to target model:
-
-# 1. Open model selector
-tmux-cli send "/model" --pane=$DROID_PANE && sleep 2
-
-# 2. Navigate to target model (example: Gemini family → Down x1 from pos 13)
-#    Replace arrow direction and count based on table above
-tmux send-keys -t $DROID_PANE Down && sleep 0.5
-
-# 3. Press Enter to confirm model selection
-tmux send-keys -t $DROID_PANE Enter && sleep 2
-
-# 4. A reasoning effort selector appears (Disabled/Low/Medium/High/Max or /Xhigh)
-#    ALWAYS navigate to the LAST option (max reasoning for the model)
-tmux send-keys -t $DROID_PANE Down Down Down Down && sleep 0.3 && \
-tmux send-keys -t $DROID_PANE Enter && sleep 2
-
-# 5. Capture to verify model changed (MANDATORY)
-tmux-cli capture --pane=$DROID_PANE
-# Check bottom status bar shows correct model + reasoning
-# e.g., "Gemini 3.1 Pro (High)", "GPT-5.3-Codex (Xhigh)", "Opus 4.6 (Max)"
-# If wrong model, repeat /model flow
-```
-
-**WARNING**: The model list order may change across Droid updates. After navigating, **always capture the pane and verify** the correct model name is shown in the status bar before sending prompts. If the wrong model was selected, use `/model` again to fix it.
-
-**NEVER select Opus 4.6 Fast Mode (12x cost)** unless the user explicitly requests "fast mode".
-
 ## Task Presets
 
-| Task | Family | Model | Reasoning | Autonomy | Wait Timeout |
-|------|--------|-------|-----------|----------|--------------|
-| Code review | Gemini | Gemini 3.1 Pro | high | Off | 300s |
-| Security audit | Gemini | Gemini 3.1 Pro | high | Off | 600s |
-| Refactoring (analyze) | Gemini | Gemini 3.1 Pro | high | Off | 300s |
-| Refactoring (apply) | Gemini | Gemini 3.1 Pro | high | Low/Medium | 300s |
-| Full access | Claude | Opus 4.6 | max | High | 600s |
+| Task | Family | Model ID | Reasoning | Autonomy | Wait Timeout |
+|------|--------|----------|-----------|----------|--------------|
+| Code review | Gemini | `gemini-3.1-pro-preview` | high | Off | 300s |
+| Security audit | Gemini | `gemini-3.1-pro-preview` | high | Off | 600s |
+| Refactoring (analyze) | Gemini | `gemini-3.1-pro-preview` | high | Off | 300s |
+| Refactoring (apply) | Gemini | `gemini-3.1-pro-preview` | high | Low/Medium | 300s |
+| Full access | Claude | `claude-opus-4-6` | max | High | 600s |
 
 **Permission required**: Ask user before using autonomy levels above Off.
 
@@ -240,22 +218,13 @@ tmux-cli interrupt --pane=$DROID_PANE
 | `Ctrl+C` x2 | Exit Droid |
 | `@` | Mention files |
 | `/` | Commands menu |
-| excl. mark | Toggle Bash mode |
-
-## Configuration Overrides
-
-Only ask user for config (via `AskUserQuestion`) when:
-- User explicitly requests different settings (model, autonomy)
-- Task requires autonomy above Off
-- Multiple reasonable approaches exist
-
-Otherwise, use defaults and proceed immediately.
 
 ## Error Handling
 
-- **CRITICAL: After starting Droid, ALWAYS capture the pane output and verify Droid launched successfully** before sending any prompts. Look for the ASCII banner and model indicator (e.g., `Gemini 3 Pro (High)`) at the bottom of the screen.
+- **CRITICAL: After starting Droid, ALWAYS capture the pane output and verify Droid launched successfully** before sending any prompts. Look for the ASCII banner and model indicator (e.g., `Gemini 3.1 Pro (High)`) at the bottom of the screen.
+- **Wrong model shown**: Re-run `droid-set-model.sh` with the correct model ID, exit Droid (double Ctrl+C), and relaunch.
 - **Event-driven wait fails**: Falls back to `wait_idle` automatically via `||` operator. No manual intervention needed.
-- **Droid exits unexpectedly**: capture output to see error, restart from step 2
+- **Droid exits unexpectedly**: capture output to see error, restart from step 3
 - **Window closes**: check `tmux list-windows -t tmux-cli`, recreate window and update `DROID_WIN`/`DROID_PANE`/`DROID_PANE_ID`
 - **wait_idle hangs/times out**: increase idle-time (+15s), or use `tmux-cli interrupt --pane=$DROID_PANE` then retry
 - **Auth issues**: user must set `FACTORY_API_KEY` environment variable
@@ -278,9 +247,9 @@ tmux kill-window -t "tmux-cli:$DROID_WIN" 2>/dev/null
 
 ## Notes
 
-- Droid interactive mode has NO `--model` CLI flag; use `/model` slash command after launch to switch
-- **Always switch model after launch** - even for default Gemini family (3 Pro → 3.1 Pro)
-- When user says "use Droid with X" - resolve X to a family, pick the best model, navigate to it
+- Droid interactive mode has NO `--model` CLI flag; model is set via `~/.factory/settings.json` before launch
+- **Always call `droid-set-model.sh` before launching Droid** to ensure the correct model
+- When user says "use Droid with X" - resolve X to a family, get the Model ID, call `droid-set-model.sh`
 - For non-interactive use, prefer `droid exec -m MODEL_ID` with `--auto` level
 - Never use `tmux-cli launch` - use `tmux new-window -t tmux-cli -n <unique-name>` for isolation
 - Summarize Droid findings for user after capturing output
