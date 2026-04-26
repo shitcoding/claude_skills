@@ -15,7 +15,7 @@ Run Codex CLI sessions via tmux-cli for code review, security audits, refactorin
 
 ## Quick Start (Default Config)
 
-**Defaults**: `gpt-5.3-codex`, `xhigh` reasoning, `read-only` sandbox, `30s` idle-time.
+**Defaults**: `gpt-5.5`, `xhigh` reasoning, `read-only` sandbox, `30s` idle-time.
 
 Valid `model_reasoning_effort` values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 
@@ -27,7 +27,7 @@ CODEX_PANE=$(tmux new-window -t tmux-cli -n "$CODEX_WIN" -d -P -F '#{session_nam
 echo "PANE: $CODEX_PANE"
 
 # 2. Start Codex
-tmux-cli send "cd $(pwd) && codex -m gpt-5.3-codex -c model_reasoning_effort=\"xhigh\" -s read-only" --pane=$CODEX_PANE && \
+tmux-cli send "cd $(pwd) && codex -m gpt-5.5 -c model_reasoning_effort=\"xhigh\" -s read-only" --pane=$CODEX_PANE && \
 tmux-cli wait_idle --pane=$CODEX_PANE --idle-time=30.0
 
 # 3. Send prompt + capture (repeat for each interaction)
@@ -51,11 +51,11 @@ Use these configurations based on task type:
 
 | Task | Model | Reasoning | Sandbox | Idle Time |
 |------|-------|-----------|---------|-----------|
-| Code review | `gpt-5.3-codex` | `xhigh` | `read-only` | 30s |
-| Security audit | `gpt-5.3-codex` | `xhigh` | `read-only` | 60s |
-| Refactoring (analyze) | `gpt-5.3-codex` | `xhigh` | `read-only` | 30s |
-| Refactoring (apply) | `gpt-5.3-codex` | `high` | `workspace-write` | 30s |
-| Full access | `gpt-5` | `xhigh` | `danger-full-access` | 60s |
+| Code review | `gpt-5.5` | `xhigh` | `read-only` | 30s |
+| Security audit | `gpt-5.5` | `xhigh` | `read-only` | 60s |
+| Refactoring (analyze) | `gpt-5.5` | `xhigh` | `read-only` | 30s |
+| Refactoring (apply) | `gpt-5.5` | `high` | `workspace-write` | 30s |
+| Full access | `gpt-5.5` | `xhigh` | `danger-full-access` | 60s |
 
 **Permission required**: Ask user before using `workspace-write` or `danger-full-access` sandbox modes.
 
