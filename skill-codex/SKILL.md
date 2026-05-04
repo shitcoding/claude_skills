@@ -25,9 +25,10 @@ Valid `model_reasoning_effort` values: `none`, `minimal`, `low`, `medium`, `high
 # Try: symlink at ~/.claude/skills, then check common project locations
 CODEX_SKILL_DIR=""
 for candidate in \
+    "$(dirname "$(readlink -f ~/.claude/skills/codex-cli-interactive/SKILL.md 2>/dev/null)" 2>/dev/null)" \
     "$(dirname "$(readlink -f ~/.claude/skills/skill-codex/SKILL.md 2>/dev/null)" 2>/dev/null)" \
-    "$(find ~/.claude/skills -maxdepth 3 -name 'codex-hook-signal.sh' -print -quit 2>/dev/null | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)"; do
-    [ -d "$candidate/scripts" ] && CODEX_SKILL_DIR="$candidate" && break
+    "$(find -L ~/.claude/skills -maxdepth 4 -name 'codex-hook-signal.sh' -print -quit 2>/dev/null | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)"; do
+    [ -n "$candidate" ] && [ "$candidate" != "." ] && [ -d "$candidate/scripts" ] && CODEX_SKILL_DIR="$candidate" && break
 done
 # Fallback: if this skill is loaded, its own directory is the skill dir
 [ -z "$CODEX_SKILL_DIR" ] && echo "ERROR: Cannot find skill-codex scripts directory" && exit 1
