@@ -21,10 +21,12 @@ When the user says "use Droid with Gemini/Codex/Claude/etc." (without specifying
 | Family | Trigger words | Model ID | Display name | Cost | Max Reasoning |
 |--------|--------------|----------|--------------|------|---------------|
 | **Gemini** (default) | "gemini", "google" | `gemini-3.1-pro-preview` | Gemini 3.1 Pro | 0.8x | high |
-| **Codex** | "codex", "gpt", "openai" | `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
-| **Claude** | "claude", "opus", "anthropic" | `claude-opus-4-6` | Opus 4.6 | 2x | max |
+| **GPT** | "gpt", "openai" | `gpt-5.5` | GPT-5.5 | 2x | xhigh |
+| **Codex** | "codex" | `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
+| **Claude** | "claude", "opus", "anthropic" | `claude-opus-4-7` | Opus 4.7 | 2x | max |
 | **Sonnet** | "sonnet" | `claude-sonnet-4-6` | Sonnet 4.6 | 1.2x | max |
-| **Droid** | "droid", "glm", "droid core" | `glm-5` | Droid Core (GLM-5) | 0.4x | high |
+| **Droid** | "droid", "glm", "droid core" | `glm-5.1` | Droid Core (GLM-5.1) | 0.55x | high |
+| **DeepSeek** | "deepseek" | `deepseek-v4-pro` | DeepSeek V4 Pro | 0.7x | high |
 
 **AVOID**: Opus 4.6 Fast Mode (12x credit cost) - never select this unless user explicitly says "fast mode".
 
@@ -96,41 +98,55 @@ sleep 2 && tmux kill-window -t "tmux-cli:$DROID_WIN"
 # Gemini (default)
 "$DROID_SCRIPTS/droid-set-model.sh" "gemini-3.1-pro-preview" "high"
 
+# GPT-5.5
+"$DROID_SCRIPTS/droid-set-model.sh" "gpt-5.5" "xhigh"
+
 # Codex
 "$DROID_SCRIPTS/droid-set-model.sh" "gpt-5.3-codex" "xhigh"
 
-# Claude
-"$DROID_SCRIPTS/droid-set-model.sh" "claude-opus-4-6" "max"
+# Claude (Opus 4.7)
+"$DROID_SCRIPTS/droid-set-model.sh" "claude-opus-4-7" "max"
 
 # Sonnet
 "$DROID_SCRIPTS/droid-set-model.sh" "claude-sonnet-4-6" "max"
 
-# Droid Core
-"$DROID_SCRIPTS/droid-set-model.sh" "glm-5" "high"
+# Droid Core (GLM-5.1)
+"$DROID_SCRIPTS/droid-set-model.sh" "glm-5.1" "high"
+
+# DeepSeek
+"$DROID_SCRIPTS/droid-set-model.sh" "deepseek-v4-pro" "high"
 ```
 
-### All Available Model IDs
+### All Available Model IDs (as of Droid v0.120.1, May 2026)
+
+**Main models:**
 
 | Model ID | Display Name | Cost | Max Reasoning |
 |----------|-------------|------|---------------|
-| `gpt-5.1` | GPT-5.1 | 0.5x | xhigh |
-| `gpt-5.1-codex` | GPT-5.1-Codex | 0.5x | xhigh |
-| `gpt-5.1-codex-max` | GPT-5.1-Codex-Max | 0.5x | xhigh |
-| `gpt-5.2` | GPT-5.2 | 0.7x | xhigh |
-| `gpt-5.2-codex` | GPT-5.2-Codex | 0.7x | xhigh |
-| `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
-| `claude-sonnet-4-5` | Sonnet 4.5 | 1.2x | max |
+| `claude-opus-4-7` | Opus 4.7 | 2x | max |
 | `claude-sonnet-4-6` | Sonnet 4.6 | 1.2x | max |
-| `claude-opus-4-5` | Opus 4.5 | 2x | max |
-| `claude-opus-4-6` | Opus 4.6 | 2x | max |
-| `claude-haiku-4-5-20251001` | Haiku 4.5 | 0.4x | high |
-| `gemini-3-pro-preview` | Gemini 3 Pro | 0.8x | high |
+| `gpt-5.5` | GPT-5.5 | 2x | xhigh |
+| `gpt-5.3-codex` | GPT-5.3-Codex | 0.7x | xhigh |
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro | 0.8x | high |
-| `gemini-3-flash-preview` | Gemini 3 Flash | 0.2x | high |
-| `glm-4.7` | Droid Core (GLM-4.7) | 0.25x | high |
-| `glm-5` | Droid Core (GLM-5) | 0.4x | high |
-| `kimi-k2.5` | Droid Core (Kimi K2.5) | 0.25x | high |
-| `minimax-m2.5` | Droid Core (MiniMax M2.5) | 0.12x | high |
+| `glm-5.1` | Droid Core (GLM-5.1) | 0.55x | high |
+| `kimi-k2.6` | Droid Core (Kimi K2.6) | 0.4x | high |
+| `deepseek-v4-pro` | Droid Core (DeepSeek V4 Pro) | 0.7x | high |
+| `minimax-m2.7` | Droid Core (MiniMax M2.7) | 0.12x | high |
+
+**Older models (still available):**
+
+| Model ID | Display Name | Cost | Max Reasoning |
+|----------|-------------|------|---------------|
+| `claude-opus-4-6` | Opus 4.6 | 2x | max |
+| `claude-opus-4-5` | Opus 4.5 | 2x | max |
+| `claude-sonnet-4-5` | Sonnet 4.5 | 1.2x | max |
+| `claude-opus-4-6-fast` | Opus 4.6 Fast Mode | 12x | max |
+
+**Deprecated (avoid):**
+
+| Model ID | Note |
+|----------|------|
+| `glm-5` | Deprecated — use `glm-5.1` instead |
 
 **NOTE**: When running multiple Droid instances with different models, call `droid-set-model.sh` before each `droid` launch. The script modifies `~/.factory/settings.json` which Droid reads at startup. Launch Droid immediately after setting the model.
 
