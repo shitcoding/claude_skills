@@ -65,7 +65,7 @@ For short non-sensitive prompts, inline is also supported:
 
 ## Configuration
 
-Defaults: `gpt-5.5`, `high` reasoning effort, `read-only` sandbox, `120s` idle timeout.
+Defaults: best available model (auto-detected), `high` reasoning effort, `read-only` sandbox, `120s` idle timeout.
 
 **Timeout behavior** — the script uses an activity-based idle watchdog, NOT a wall-clock timeout:
 - Codex runs with `--json`, streaming JSONL events as it works (thinking, reading files, tool calls)
