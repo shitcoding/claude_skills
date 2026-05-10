@@ -77,6 +77,9 @@ Defaults: `gpt-5.5`, `high` reasoning effort, `read-only` sandbox, `120s` idle t
 ```bash
 # Override model and effort
 "$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-5.4 --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
+
+# Fast mode (1.5x speed, 2x credits) — same quality, faster inference
+"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --fast --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
 ```
 
 **Sandbox modes** (ask user before using write modes):
