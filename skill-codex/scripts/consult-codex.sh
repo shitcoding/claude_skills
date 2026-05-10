@@ -20,7 +20,6 @@ set -euo pipefail
 
 # --- Defaults ---
 MODE="ask"
-MODEL="gpt-5.5"
 EFFORT="high"
 SANDBOX="read-only"
 IDLE_TIMEOUT=120   # seconds of no JSONL activity before considering hung
@@ -30,6 +29,12 @@ PROMPT_FILE=""
 EPHEMERAL=0
 FAST=0
 REVIEW_ARGS=()
+
+# Auto-detect best available model from bundled catalog (13ms, no network).
+# Picks the model with lowest priority number and visibility=list.
+MODEL=$(codex debug models --bundled 2>/dev/null \
+    | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
+    || echo "gpt-5.5")  # Fallback if detection fails
 
 # --- Check required binaries ---
 if ! command -v codex &>/dev/null; then
