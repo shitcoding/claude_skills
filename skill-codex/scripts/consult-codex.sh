@@ -28,6 +28,7 @@ SESSION_ID=""
 PROMPT=""
 PROMPT_FILE=""
 EPHEMERAL=0
+FAST=0
 REVIEW_ARGS=()
 
 # --- Check required binaries ---
@@ -58,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --commit)      require_value "$1" "${2:-}"; REVIEW_ARGS+=(--commit "$2"); shift 2 ;;
         --uncommitted) REVIEW_ARGS+=(--uncommitted); shift ;;
         --ephemeral)   EPHEMERAL=1; shift ;;
+        --fast)        FAST=1; shift ;;
         --)            shift; PROMPT="$*"; break ;;
         -*)            echo "Error: unknown option '$1'" >&2; exit 1 ;;
         *)             PROMPT="$*"; break ;;
@@ -139,6 +141,7 @@ case "$MODE" in
             -s "$SANDBOX"
             --disable hooks
             -o "$RESULT_FILE")
+        [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
         CMD+=(-)
         ;;
@@ -154,6 +157,7 @@ case "$MODE" in
             -c "model_reasoning_effort=\"$EFFORT\""
             --disable hooks
             -o "$RESULT_FILE")
+        [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
         CMD+=(-)
         ;;
@@ -164,6 +168,7 @@ case "$MODE" in
             -c "model_reasoning_effort=\"$EFFORT\""
             --disable hooks
             -o "$RESULT_FILE")
+        [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
         if [[ ${#REVIEW_ARGS[@]} -gt 0 ]]; then
             CMD+=("${REVIEW_ARGS[@]}")
