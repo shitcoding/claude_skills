@@ -98,6 +98,35 @@ pass insert ticktick-cli/client-secret
 bun run scripts/ticktick.ts auth
 ```
 
+### browser-testing
+
+Inspect and test any website through a headed Chrome instance driven over CDP (Chrome DevTools Protocol). Returns structured DOM data instead of screenshots — far less context than screenshot-based testing.
+
+**Features:**
+- Structured page inspection: headings, links, forms, images (incl. broken ones), meta tags, console errors
+- **Failed network requests** — 4xx/5xx responses and network-level failures, so "page renders but the API 500s" is visible
+- Responsive checks at 4 breakpoints, **axe-core** accessibility audits, SEO audits, staging-vs-production comparison
+- Optional **Lighthouse** audit run against the same logged-in browser (`--disable-storage-reset`, so it can't wipe your session)
+- **`--out FILE`** — write the full report to disk and print only the lines that signal a real problem
+- Natural-language element finding, computed styles, arbitrary JS evaluation
+- Multi-step flows (click/fill/navigate/inspect) via the `connect.py` Python API
+- Persistent Chrome profile — logins survive restarts; tabs do not (no session-restore pile-up)
+- JPEG screenshots at CSS scale (no HiDPI 2x blowup), auto-downscaled to ≤2000px as a backstop
+- Drives your real Chrome install over CDP — no bundled browser download
+
+**Requirements:**
+- Python 3.10+ (`python3`)
+- Google Chrome, Chromium, or Edge (auto-detected; override with `CHROME_BIN`)
+- Node.js (optional — only for `--lighthouse`)
+
+**Installation:**
+```bash
+# No manual install — the venv (playwright + pillow + axe-core) bootstraps on first run
+~/.claude/skills/browser-testing/scripts/bt https://example.com
+```
+
+**Configuration (all optional):** `CDP_PORT` (default 9333), `BT_CHROME_PROFILE`, `CHROME_BIN`, `BT_SCREENSHOT_DIR`.
+
 ## Setup
 
 Skills must be symlinked to `~/.claude/skills/` directory.

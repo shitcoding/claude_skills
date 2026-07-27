@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# bt — single entry point for the browser-testing skill.
+#
+# Bootstraps the venv on first use, then dispatches:
+#   bt --start|--stop|--status|--login [URL]   → setup_chrome.sh (Chrome lifecycle, no venv needed)
+#   bt --python ...                            → venv python (for multi-step flows)
+#   bt <URL> [flags]                           → browse.py (inspection CLI)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+VENV="$SKILL_DIR/.venv"
+
+# Chrome lifecycle needs no Python deps — dispatch before bootstrapping.
+case "${1:-}" in
+    --start) shift; exec bash "$SCRIPT_DIR/setup_chrome.sh" "$@" ;;
+    --stop|--status|--login)
+             exec bash "$SCRIPT_DIR/setup_chrome.sh" "$@" ;;
+    --reinstall)
+        echo "browser-testing: removing $VENV ..." >&2
+        rm -rf "$VENV"
+        shift            # must not reach browse.py — it would reject the flag
+        REINSTALL_ONLY=1
+        ;;
+esac
+
+# Probe the CORE imports only, not just the interpreter: a venv left half-installed
+# by an interrupted pip would otherwise be reused forever and fail with ImportError.
+# Optional extras (axe) are deliberately NOT probed — a bad release of one must not
+# be able to block the whole skill from bootstrapping. `bt --reinstall` adds them.
+if ! "$VENV/bin/python" -c "import playwright, PIL" >/dev/null 2>&1; then
+    # connect.py uses `X | None` annotations, evaluated at def time.
+    if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+        echo "browser-testing: needs Python 3.10+, found $(python3 -V 2>&1)." >&2
+        exit 1
+    fi
+    echo "browser-testing: setting up venv at $VENV ..." >&2
+    python3 -m venv "$VENV"
+    "$VENV/bin/python" -m pip install -q --upgrade pip
+    "$VENV/bin/python" -m pip install -q -r "$SKILL_DIR/requirements.txt"
+    echo "browser-testing: venv ready." >&2
+fi
+
+# `bt --reinstall` on its own is a maintenance command, not a page request. With
+# trailing args, re-dispatch them from the top (the venv is rebuilt, so no loop).
+if [[ -n "${REINSTALL_ONLY:-}" ]]; then
+    [[ $# -eq 0 ]] && exit 0
+    exec "$0" "$@"
+fi
+
+# Let `--python` snippets `import connect` without a sys.path dance.
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+case "${1:-}" in
+    --python) shift; exec "$VENV/bin/python" "$@" ;;
+    *)        exec "$VENV/bin/python" "$SCRIPT_DIR/browse.py" "$@" ;;
+esac

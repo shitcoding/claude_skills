@@ -1,0 +1,12 @@
+# Chrome persistent profile (contains cookies, auth sessions)
+config/chrome-profile/
+
+# Python virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Temp screenshots
+tmp_screenshots/
