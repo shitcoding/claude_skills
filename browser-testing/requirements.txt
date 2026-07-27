@@ -1,0 +1,6 @@
+playwright>=1.50
+pillow>=11.0
+# Bundles axe-core for --accessibility. Upper bound is deliberate: the async API we
+# use (axe_playwright_python.async_playwright) is undocumented, so a minor bump could
+# rename it. Not probed by `bt` — see the comment there.
+axe-playwright-python>=0.1.8,<0.2
