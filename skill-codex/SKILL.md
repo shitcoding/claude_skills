@@ -76,7 +76,7 @@ Defaults: best available model (auto-detected), `high` reasoning effort, `read-o
 
 ```bash
 # Override model and effort
-"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-5.4 --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
+"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-5.6 --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
 
 # Fast mode (1.5x speed, 2x credits) — same quality, faster inference
 "$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --fast --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
@@ -85,9 +85,11 @@ Defaults: best available model (auto-detected), `high` reasoning effort, `read-o
 **Sandbox modes** (ask user before using write modes):
 - `read-only` (default) — Codex can read files but not modify anything
 - `workspace-write` — Codex can write to the workspace (requires user permission)
-- `danger-full-access` — full access (requires user permission)
+- `danger-full-access` — full access (requires user permission AND the explicit `--allow-full-access` flag — the script refuses it otherwise, so a run can never be narrated as "read-only" while actually unrestricted)
 
 Sandbox only applies to `--mode ask` (plain `codex exec`). Review and resume modes use Codex defaults.
+
+**Review scope + custom prompt (codex ≥0.130):** `--uncommitted`/`--base`/`--commit` are mutually exclusive with a custom prompt in `codex exec review`. The script handles this automatically — when both are given, it reroutes through ask mode with a combined prompt that tells Codex to inspect the same git scope itself (a stderr note says so). No action needed.
 
 ## Notes
 

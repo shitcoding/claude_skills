@@ -22,19 +22,21 @@ set -euo pipefail
 MODE="ask"
 EFFORT="high"
 SANDBOX="read-only"
-IDLE_TIMEOUT=120   # seconds of no JSONL activity before considering hung
+IDLE_TIMEOUT=300   # seconds of no JSONL/CPU activity before considering hung (xhigh final-answer
+                   # generation can stream nothing for >2min while the model composes — 120s was too tight)
 SESSION_ID=""
 PROMPT=""
 PROMPT_FILE=""
 EPHEMERAL=0
 FAST=0
+ALLOW_FULL_ACCESS=0
 REVIEW_ARGS=()
 
 # Auto-detect best available model from bundled catalog (13ms, no network).
 # Picks the model with lowest priority number and visibility=list.
 MODEL=$(codex debug models --bundled 2>/dev/null \
     | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
-    || echo "gpt-5.5")  # Fallback if detection fails
+    || echo "gpt-5.6")  # Fallback if detection fails
 
 # --- Check required binaries ---
 if ! command -v codex &>/dev/null; then
@@ -48,6 +50,36 @@ require_value() {
         echo "Error: $1 requires a value" >&2
         exit 1
     fi
+}
+
+# Recover the final assistant message from codex's --json stdout stream.
+# Fallback for when `-o RESULT_FILE` (--output-last-message) comes back empty — observed on
+# codex-cli >=0.139, where a successful run otherwise returned nothing. Handles both the
+# streamed `item.completed`/`agent_message` shape and the `response_item`/assistant `message` shape.
+extract_from_jsonl() {
+    [[ -s "$1" ]] || return 0
+    python3 - "$1" 2>/dev/null <<'PY'
+import json, sys
+last = None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    it = d.get("item") or {}
+    if isinstance(it, dict) and it.get("type") == "agent_message" and it.get("text"):
+        last = it["text"]
+    for cand in (d.get("payload"), d.get("item")):
+        if isinstance(cand, dict) and cand.get("type") == "message" and cand.get("role") == "assistant":
+            s = "".join(c.get("text", "") for c in cand.get("content", []) if isinstance(c, dict))
+            if s.strip():
+                last = s
+if last:
+    sys.stdout.write(last)
+PY
 }
 
 # --- Parse arguments ---
@@ -65,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --uncommitted) REVIEW_ARGS+=(--uncommitted); shift ;;
         --ephemeral)   EPHEMERAL=1; shift ;;
         --fast)        FAST=1; shift ;;
+        --allow-full-access) ALLOW_FULL_ACCESS=1; shift ;;
         --)            shift; PROMPT="$*"; break ;;
         -*)            echo "Error: unknown option '$1'" >&2; exit 1 ;;
         *)             PROMPT="$*"; break ;;
@@ -102,6 +135,13 @@ fi
 # --- Validate inputs ---
 if [[ ! "$IDLE_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$IDLE_TIMEOUT" -eq 0 ]]; then
     echo "Error: --timeout must be a positive integer, got: $IDLE_TIMEOUT" >&2
+    exit 1
+fi
+
+# Guard: full filesystem access must be an explicit, deliberate choice (user-approved),
+# never something the caller narrates as "read-only" while the flag says otherwise.
+if [[ "$SANDBOX" == "danger-full-access" && "$ALLOW_FULL_ACCESS" -ne 1 ]]; then
+    echo "Error: --sandbox danger-full-access requires the explicit --allow-full-access flag (get user approval first)" >&2
     exit 1
 fi
 
@@ -167,19 +207,51 @@ case "$MODE" in
         CMD+=(-)
         ;;
     review)
-        CMD=(codex exec review
-            --json
-            -m "$MODEL"
-            -c "model_reasoning_effort=\"$EFFORT\""
-            --disable hooks
-            -o "$RESULT_FILE")
-        [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
-        [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
-        if [[ ${#REVIEW_ARGS[@]} -gt 0 ]]; then
-            CMD+=("${REVIEW_ARGS[@]}")
-        fi
-        if [[ -n "$PROMPT_FD" ]]; then
+        if [[ -n "$PROMPT_FD" && ${#REVIEW_ARGS[@]} -gt 0 ]]; then
+            # codex >=0.130 makes --uncommitted/--base/--commit mutually exclusive with a
+            # custom prompt. Re-route through ask mode: combine the scope + the custom
+            # instructions into one prompt and let codex inspect the diff itself
+            # (read-only sandbox can run git in cwd).
+            echo "Note: review scope + custom prompt are incompatible on codex >=0.130 — rerouting through ask mode" >&2
+            SCOPE_DESC="${REVIEW_ARGS[*]}"
+            OWNED_TEMP_FILE=$(mktemp)
+            {
+                printf 'Perform a CODE REVIEW of this repository, scoped exactly as `codex exec review %s` would be:\n' "$SCOPE_DESC"
+                printf -- '- `--uncommitted` => review the uncommitted working-tree changes (`git status`, `git diff`, `git diff --staged`)\n'
+                printf -- '- `--base <ref>`  => review changes vs that base (`git diff <ref>...HEAD`)\n'
+                printf -- '- `--commit <sha>` => review that commit (`git show <sha>`)\n'
+                printf 'Inspect the relevant diff yourself with read-only git commands, then review it.\n\nAdditional review instructions:\n\n'
+                cat <&3
+            } > "$OWNED_TEMP_FILE"
+            exec 3<&-
+            exec 3< "$OWNED_TEMP_FILE"
+            rm -f -- "$OWNED_TEMP_FILE"
+            OWNED_TEMP_FILE=""
+            CMD=(codex exec
+                --json
+                -m "$MODEL"
+                -c "model_reasoning_effort=\"$EFFORT\""
+                -s "$SANDBOX"
+                --disable hooks
+                -o "$RESULT_FILE")
+            [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
+            [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
             CMD+=(-)
+        else
+            CMD=(codex exec review
+                --json
+                -m "$MODEL"
+                -c "model_reasoning_effort=\"$EFFORT\""
+                --disable hooks
+                -o "$RESULT_FILE")
+            [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
+            [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
+            if [[ ${#REVIEW_ARGS[@]} -gt 0 ]]; then
+                CMD+=("${REVIEW_ARGS[@]}")
+            fi
+            if [[ -n "$PROMPT_FD" ]]; then
+                CMD+=(-)
+            fi
         fi
         ;;
     *)
@@ -247,29 +319,39 @@ while kill -0 "$CODEX_PID" 2>/dev/null; do
             kill "$CODEX_PID" 2>/dev/null || true
             wait "$CODEX_PID" 2>/dev/null || true
             CODEX_PID=""
-            # Print partial result if available
-            [[ -s "$RESULT_FILE" ]] && cat "$RESULT_FILE"
+            # Print partial result if available (RESULT_FILE, else recover from the JSONL stream)
+            if [[ -s "$RESULT_FILE" ]]; then cat "$RESULT_FILE"; else extract_from_jsonl "$JSONL_FILE"; fi
             exit 124
         fi
     fi
 done
 
-# Codex exited — collect status
-wait "$CODEX_PID" 2>/dev/null
-EXIT_CODE=$?
+# Codex exited — collect status.
+# MUST NOT trip `set -e`: a bare `wait` returning the child's non-zero status used to
+# kill the script HERE, before any error reporting ran → "exit 1 with empty output,
+# stderr swallowed" (bit the 2026-06-11 harness-audit review run).
+EXIT_CODE=0
+wait "$CODEX_PID" 2>/dev/null || EXIT_CODE=$?
 CODEX_PID=""
 
 # --- Output ---
+# Prefer the -o RESULT_FILE; fall back to recovering the final message from the JSONL stream
+# (codex >=0.139 sometimes leaves RESULT_FILE empty on an otherwise-successful run).
 if [[ "$EXIT_CODE" -eq 0 ]]; then
     if [[ -s "$RESULT_FILE" ]]; then
         cat "$RESULT_FILE"
     else
-        echo "(Codex returned an empty response)" >&2
+        RECOVERED=$(extract_from_jsonl "$JSONL_FILE")
+        if [[ -n "$RECOVERED" ]]; then
+            printf '%s\n' "$RECOVERED"
+        else
+            echo "(Codex returned an empty response)" >&2
+        fi
     fi
 else
     echo "Error: Codex exited with code $EXIT_CODE" >&2
     [[ -s "$ERR_FILE" ]] && cat "$ERR_FILE" >&2
-    # Print partial result if available
-    [[ -s "$RESULT_FILE" ]] && cat "$RESULT_FILE"
+    # Print partial result if available (RESULT_FILE, else recover from the JSONL stream)
+    if [[ -s "$RESULT_FILE" ]]; then cat "$RESULT_FILE"; else extract_from_jsonl "$JSONL_FILE"; fi
     exit $EXIT_CODE
 fi
