@@ -40,75 +40,238 @@ The new skill goes in the **public** repo: it is generally useful, and the repor
 
 ---
 
-## Task 0: Export the cass-only history (BLOCKING — do this first)
+## Task 0: Archive the mirror, then restore pruned sessions (BLOCKING — do this first)
 
-All three research reports flagged this independently. ~4× more Claude history exists only inside cass's single-author SQLite mirror than survives on disk. Until it is exported, the architecture's premise ("the index is a disposable derivative") is false.
+Claude Code pruned session transcripts on a 30-day window until `cleanupPeriodDays: 3650` was set on
+2026-08-08. cass had already mirrored them **byte for byte**, so the deleted files are recoverable to
+their exact original paths — not merely archivable.
 
-**Files:**
-- Create: `~/coding/claude_code/skills/my_claude_skills_claude_config/claude_docs/archive/sessions/` (destination)
-- Create: `/tmp/export-cass-history.sh` (throwaway — do not commit)
+**Order matters: archive first, restore second.** The archive is the stable recovery source; build it
+before touching live Claude Code state.
 
-**Step 1: Measure what needs exporting**
+### Evidence base (verified 2026-08-10)
 
-```bash
-cass stats 2>/dev/null | sed -n '1,20p'
-find ~/.claude/projects -name '*.jsonl' -not -path '*/subagents/*' | wc -l
-```
+A live round-trip was performed on one deleted session
+(`-Users-<user>-coding-clawdbot/17b7b8d4-….jsonl`, now restored): bytes identical to the blob, size
+exactly matching the manifest (1,258,316), 388/388 JSONL lines parsed, `compression: none`,
+`encryption: none`, permissions `-rw-------`. The restored `source_mtime_ms` (20:53 +03:00) equals the
+last in-file timestamp (17:53 UTC) — the same instant, confirming the manifest carries the true mtime.
 
-Expected: cass reports ~322 `claude_code` conversations; disk shows ~81 top-level files. The gap is what exists only in cass.
+Facts extracted from the Claude Code 2.1.220 binary itself (not inferred):
 
-**Step 2: Copy the raw mirror — do NOT use `cass export` for the archive**
+- **The `/resume` picker sorts by file mtime.** The lister stats each `.jsonl` and stores
+  `mtime: l.mtime.getTime()`; the comparator is `QL_(e,t){if(t.mtime!==e.mtime)return t.mtime-e.mtime;…}`.
+  In-file timestamps are only a fallback. **Restoring original mtimes is therefore mandatory** — fresh
+  mtimes would stack 46 stale sessions above all current work in every picker.
+- **`sessions-index.json` is dead.** The string appears **zero times** in the binary. The two on-disk
+  copies are relics. Do not create or update it.
+- **Retention cleanup deletes by mtime and reaps the whole session directory**: `if(!(i.mtime<t))`
+  retain, else unlink, then `rm -rf` of `<uuid>/` including `.ccr-tip.json`, `.precompact.json` and
+  file-history.
+- **Orphaned session dirs are an anticipated state** — cleanup has an explicit branch for a session
+  dir with no matching top-level `.jsonl`.
+- The picker is a non-recursive `readdir` filtering `*.jsonl` with UUID basenames; subagent files are
+  loaded on demand by parent sessionId, never listed as top-level entries.
 
-`cass export --format json` strips tool use and skill content by default (`--include-tools` /
-`--include-skills` are opt-in, "stripped for privacy"). Archiving that would silently discard exactly
-the material that makes a session worth keeping. cass already stores **byte-for-byte originals**:
+### Inventory (measured 2026-08-10, reproduced independently by two reviewers)
+
+| Under `~/.claude/projects` | Mirrored | Missing = restorable |
+|---|---|---|
+| Top-level sessions (resumable) | 80 | **46** |
+| Subagent transcripts (`<parent-uuid>/subagents/agent-*.jsonl`) | 237 | **179** |
+| **Total** | 317 | **225 files, 405,565,385 bytes** |
+
+- **Zero orphans**: all 179 subagent transcripts have a parent that is either already on disk or among
+  the 46 being restored. **Restore all 225 to their original paths** — do not split subagents into a
+  separate destination. Doing so would add a second destination and a split manifest, and would break
+  the vendor layout that Tasks 1–8 search, for no benefit.
+- 4 project directories do not currently exist and will be created. Harmless: the all-projects picker
+  lists them, and selecting a session from an unrelated project copies a `cd`+resume command rather
+  than switching state.
+- 0 duplicate manifests among the missing set. Oldest restorable: 2026-05-21. 70 GiB free.
+
+### Scope guard — anchor, do not substring-match
+
+**A substring test on `"/.claude/projects/"` is wrong and was a real defect.** 317 manifests match it
+but only **309** are under `~/.claude/projects`; **8 are Claude *Desktop*** files at
+`~/Library/Application Support/Claude/local-agent-mode-sessions/…/local_*/.claude/projects/…` — the
+encoded Desktop sandbox cwd itself contains the substring. They exist on disk today so they would be
+skipped today, but a Desktop sandbox cleanup would turn them into restore targets in a directory
+Claude Code does not own.
+
+Anchor with `startswith(os.path.expanduser("~/.claude/projects/"))`. Also out of scope, and excluded
+by the anchor: `~/.codex/sessions` (797 manifests), other Claude Desktop paths (85), `~/.local/share`
+(136).
+
+**Step 1: Archive the mirror first (stable recovery source)**
+
+`cass export --format json` is **lossy** — `--include-tools` and `--include-skills` are opt-in
+("stripped for privacy"). Copy the raw mirror instead; it is byte-for-byte.
 
 ```bash
 MIRROR=~/Library/Application\ Support/com.coding-agent-search.coding-agent-search/raw-mirror/v1
-ls "$MIRROR"                     # blobs  manifests  tmp
-ls "$MIRROR"/manifests | head -3
-jq . "$MIRROR"/manifests/<one>.json   # inspect the real field names before scripting
+mkdir -p ~/Archive/ai-sessions
+cp -R "$MIRROR"/blobs "$MIRROR"/manifests ~/Archive/ai-sessions/
+du -sh ~/Archive/ai-sessions
 ```
 
-Manifests carry `provider`, `original_path`, `source_size_bytes`, `blob_blake3`, `captured_at_ms`
-and blob location. Verified: a session absent from disk has an intact blob whose first bytes are
-literal Claude JSONL.
-
-Copy `blobs/` and `manifests/` (or just the blobs whose `original_path` no longer exists) to:
-
-```
-~/Archive/ai-sessions/          # NOT inside any of the three git repos — see Step 5
-```
-
-**Step 3: Build the tool-neutral manifest by projecting cass's own**
-
-Do not hand-build it and do not compute a second hash — the manifests already carry `blob_blake3`.
+Build the tool-neutral manifest by projecting cass's own — do not hand-build one, and do not compute a
+second hash (the manifests already carry `blob_blake3`):
 
 ```bash
-jq -s 'map({provider, original_path, source_size_bytes, blob_blake3, captured_at_ms})' \
-   "$MIRROR"/manifests/*.json > ~/Archive/ai-sessions/manifest.json
+jq -s 'map({provider, original_path, source_size_bytes, blob_blake3, source_mtime_ms, captured_at_ms})' \
+   ~/Archive/ai-sessions/manifests/*.json > ~/Archive/ai-sessions/manifest.json
 jq 'group_by(.provider) | map({provider: .[0].provider, n: length})' ~/Archive/ai-sessions/manifest.json
 ```
 
-Expected: `claude_code` ≈ 322 (matching the DB count), `codex` ≈ 693.
+**Bodies stay out of git** — ~872 MB of client work, and the config repo is pushed to GitHub. Only the
+manifest is committed, and note that `original_path` can itself reveal client names.
 
-**Step 4: Verify by hash and size, not by file count**
-
-`ls | wc -l` is not adequate verification for irreplaceable client work.
+**Step 2: Build the restore list, and stop on any count drift**
 
 ```bash
-# for each copied blob: recompute blake3 and compare to the manifest's blob_blake3,
-# and compare byte size to source_size_bytes. Report any mismatch and STOP.
-b3sum <blob>    # or any blake3 implementation
+python3 - <<'PYEOF' > /tmp/restore-plan.json
+import json,glob,os,sys
+from pathlib import Path
+mirror = os.path.expanduser("~/Library/Application Support/com.coding-agent-search.coding-agent-search/raw-mirror/v1")
+anchor = os.path.expanduser("~/.claude/projects/")          # anchored, NOT a substring test
+blobs_root = os.path.realpath(os.path.join(mirror, "blobs"))
+skips = {}
+def skip(reason): skips[reason] = skips.get(reason, 0) + 1
+out = []
+for m in glob.glob(mirror + "/manifests/*.json"):
+    try:
+        d = json.load(open(m))
+    except Exception:
+        skip("unreadable manifest"); continue
+    p = d.get("original_path") or ""
+    if not p.startswith(anchor):                      skip("out of scope"); continue
+    if os.path.exists(p):                             skip("target exists"); continue
+    if d.get("compression", {}).get("state") != "none": skip("compressed"); continue
+    if d.get("encryption", {}).get("state") != "none":  skip("encrypted"); continue
+    blob = os.path.realpath(os.path.join(mirror, d["blob_relative_path"]))
+    if not blob.startswith(blobs_root + os.sep):      skip("blob path escapes mirror"); continue
+    if not os.path.isfile(blob):                      skip("blob missing"); continue
+    out.append({"target": p, "blob": blob, "size": d["source_size_bytes"],
+                "blake3": d["blob_blake3"], "mtime_ms": d["source_mtime_ms"]})
+print(json.dumps(out, indent=1))
+sys.stderr.write("skips: " + json.dumps(skips, indent=1) + "\n")
+PYEOF
+
+jq 'length' /tmp/restore-plan.json                                  # expect 225
+jq -r '.[].target' /tmp/restore-plan.json | grep -c '/subagents/'   # expect 179
+jq '[.[].size] | add' /tmp/restore-plan.json                        # expect 405565385
+jq -r '.[].target' /tmp/restore-plan.json | sort | uniq -d | wc -l  # expect 0
 ```
 
-**If any blob fails, stop and investigate.** Do not proceed believing the data is safe.
+**Stop and investigate on any drift from 225 / 179 / 405,565,385 / 0.** Skip reasons are printed to
+stderr by cause — never silently swallowed.
 
-**Step 5: Keep bodies out of git; commit only the manifest**
+**Step 3: Restore, with an incremental journal**
 
-The bodies are ~900 MB of client work and the config repo is pushed to GitHub. Bodies live in
-`~/Archive/ai-sessions/` (covered by normal backups); only the manifest goes in git. Note that
-`original_path` and `cwd` can themselves reveal client names — redact if that matters to you.
+Invariants, in priority order:
+
+1. **Never overwrite an existing file.** This protects live sessions, including the one you are
+   running in. Published with `os.link`, which raises `FileExistsError` rather than overwriting —
+   `os.replace` would silently clobber a file created between the check and the write.
+2. **Restore the original mtime** — mandatory, per the picker's mtime sort.
+3. **`chmod 600` before publishing**, matching Claude Code's convention and leaving no window at
+   looser temp permissions.
+4. **Verify per file**: size equals the manifest, `cmp` byte-identical to the blob, and the file
+   parses as JSONL end to end.
+5. **Journal every action immediately**, so a crash still leaves an authoritative rollback list.
+
+```bash
+find ~/.claude/projects -name '*.restore-tmp' -delete   # clear any leftovers from a previous crash
+
+python3 - <<'PYEOF'
+import json, os, shutil, filecmp
+plan = json.load(open("/tmp/restore-plan.json"))
+journal = open("/tmp/restore-journal.jsonl", "a", buffering=1)   # line-buffered: crash-safe
+done = skipped = failed = 0
+def log(action, target, detail=""):
+    journal.write(json.dumps({"action": action, "target": target, "detail": detail}) + "\n")
+for r in plan:
+    t = r["target"]
+    try:
+        if os.path.exists(t):
+            skipped += 1; log("skip", t, "exists"); continue
+        os.makedirs(os.path.dirname(t), exist_ok=True)
+        tmp = t + ".restore-tmp"
+        shutil.copyfile(r["blob"], tmp)
+        if os.path.getsize(tmp) != r["size"]:
+            os.remove(tmp); failed += 1; log("fail", t, "size mismatch"); continue
+        if not filecmp.cmp(r["blob"], tmp, shallow=False):
+            os.remove(tmp); failed += 1; log("fail", t, "bytes differ"); continue
+        ok = bad = 0
+        for line in open(tmp, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if not line: continue
+            try: json.loads(line); ok += 1
+            except Exception: bad += 1
+        if bad or ok == 0:
+            os.remove(tmp); failed += 1; log("fail", t, f"unparseable ({bad} bad)"); continue
+        os.chmod(tmp, 0o600)
+        try:
+            os.link(tmp, t)          # no-overwrite publish; raises if target appeared meanwhile
+        except FileExistsError:
+            os.remove(tmp); skipped += 1; log("skip", t, "appeared during restore"); continue
+        os.remove(tmp)
+        s = r["mtime_ms"] / 1000
+        os.utime(t, (s, s))
+        done += 1; log("restored", t)
+    except Exception as e:
+        failed += 1; log("fail", t, f"{type(e).__name__}: {e}")
+print(f"restored={done} skipped={skipped} failed={failed}")
+PYEOF
+```
+
+**Step 4: Verify and preserve the rollback list**
+
+```bash
+grep -c '"action": "restored"' /tmp/restore-journal.jsonl   # expect 225
+grep '"action": "fail"'        /tmp/restore-journal.jsonl   # expect empty
+cp /tmp/restore-journal.jsonl ~/Archive/ai-sessions/        # /tmp is wiped on reboot
+```
+
+Rollback is `rm` of exactly the `restored` paths in the journal. Note it leaves the 4 created project
+directories and any `<uuid>/subagents/` directories behind, empty — harmless, and Claude Code's
+cleanup opportunistically removes empty dirs, but "rollback is complete" is not literally true.
+
+**Step 5: Confirm Claude Code still behaves**
+
+`sessions-index.json` is not required (verified: the string is absent from the binary). Nothing else —
+`history.jsonl` is arrow-up prompt history, `__store.db` does not exist on this machine — needs
+updating. Scanning `.jsonl` is genuinely sufficient.
+
+1. `claude --resume` in a project that received restored sessions — do they appear, dated correctly?
+2. Open one **with `--fork-session`**, not a plain resume: a plain resume writes into the restored
+   transcript, mutating the artifact you just recovered.
+3. `claude --resume` in a project that received nothing — confirm it is unchanged.
+4. Confirm the currently-running session's `.jsonl` is untouched.
+
+**Do not claim `/rewind` fidelity.** Checkpoint and file-history state lives outside the transcript
+and was pruned with the originals; a restored session resumes and searches fine, but `/rewind` has
+nothing to rewind to (the binary logs "FileHistory: Missing most recent snapshot" and continues).
+Resuming an old session is otherwise safe by design: a retired model is not restored, `plan`/
+`bypassPermissions` are never restored, settings files are re-read at launch, and a missing agent
+degrades to defaults with a warning.
+
+**Step 6: Record the retention hazard**
+
+> These 225 files carry mtimes from May–July 2026. Retention cleanup deletes by mtime and `rm -rf`s
+> the session directory with it. **If `cleanupPeriodDays` is ever lowered back to 30, all 225 are
+> deleted again on the next startup pass.** The Step 1 archive is the durable copy; `~/.claude/projects`
+> is not.
+
+Add a preflight assertion before any future re-run:
+
+```bash
+jq -e '.cleanupPeriodDays >= 365' ~/.claude/settings.json >/dev/null \
+  || echo "REFUSING: cleanupPeriodDays is too low; restored files would be pruned"
+```
+
+**Step 7: Commit the manifest**
 
 ```bash
 cd ~/coding/claude_code/skills/my_claude_skills_claude_config
@@ -118,12 +281,15 @@ git add claude_docs/archive/manifest.json
 git commit -m "chore: record archived session manifest"
 ```
 
-**Step 6: Note why copying out is mandatory**
+**Note on verification depth:** `b3sum`/`blake3` are not installed, so blobs are not re-hashed. This is
+deliberate. The blobs were blake3-verified by cass at capture (`verification.content_blake3` in every
+manifest), the restore is a same-disk copy, and `cmp` byte-compares each restored file against its
+source — strictly stronger than a hash for *copy* integrity, and requiring no new tooling. The
+manifests retain `blob_blake3` if a future audit wants it.
 
-`cass mirror prune` can delete the mirror at any time. Until the copy exists outside cass's
-ownership, cass is the sole custodian of ~4× the Claude history that survives on disk.
-
----
+**cass will not interfere:** no cass daemon in `ps`, no launchd agent, and `cass status` reports a
+passive stale index. Restored files are re-ingested only when someone runs `cass index` explicitly —
+which is desirable for Tasks 1–8 and never mutates the source files.
 
 ## Task 1: Gold retrieval set
 
