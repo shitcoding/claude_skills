@@ -23,7 +23,7 @@ check() {  # check <desc> <expected-exit> <args...>
 
 check "allows api-version"             0  api-version
 check "allows search --json"           0  search "foo" --json --limit 5
-check "allows view"                    0  view /some/path.jsonl -n 42 --json
+check "refuses view (not allow-listed)" 42  view /some/path.jsonl -n 42 --json
 check "allows pack"                    0  pack "foo" --json --max-tokens 2000
 check "refuses index"                 42  index
 check "refuses doctor --fix"          42  doctor --fix

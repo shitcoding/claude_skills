@@ -25,8 +25,9 @@ set -uo pipefail
 CASS_BIN="${CASS_RO_BIN:-cass}"
 TIMEOUT_SECS="${CASS_RO_TIMEOUT:-8}"
 
-# Only what the skill actually needs on the production path.
-ALLOWED_SUBCOMMANDS="api-version status search view expand pack sessions"
+# Only what the skill actually needs on the production path. view/expand/sessions were
+# removed: the skill reads transcripts with jq, not through cass. Re-add if that changes.
+ALLOWED_SUBCOMMANDS="api-version status search pack"
 # Every flag the skill is allowed to pass. Anything else starting with '-' is refused.
 ALLOWED_FLAGS="--json --robot-meta --robot-format --limit --offset --timeout --mode --fields
 --max-content-length --max-tokens --max-evidence --max-sessions --max-excerpt-chars
