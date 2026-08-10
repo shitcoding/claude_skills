@@ -26,12 +26,15 @@ The new skill goes in the **public** repo: it is generally useful, and the repor
 
 **Verified facts that shape the code** (re-verify before relying on them; all checked 2026-08-09/10):
 
-- `cass definitely-not-a-command` **exits 0**. cass does not reliably error on unknown subcommands, so the guard's allow-list is load-bearing — it cannot delegate validation to cass.
+- **cass auto-corrects near-miss flags and subcommands, then executes them.** `cass api-version --js` prints "Corrected typo '--js' to '--json'" and runs, exit 0. `cass definitely-not-a-command` prints "Assumed 'search' subcommand" and runs a search, exit 0. **This is why the guard uses allow-lists for both subcommands and flags** — a deny-list of exact strings is defeated by `--refres`, which cass will happily correct to `--refresh`.
+- **`cass search` can write.** A bounded search returned exit 5 with `kind:"lexical-rebuild"` ("automatic lexical repair failed", touching `index-run.lock`) — cass attempts derived-index repair *without* `--refresh`. **"Read-only" in this plan therefore means: never mutates vendor session files, and never intentionally triggers indexing or repair. It does not mean zero writes anywhere** — that would require an OS-enforced read-only environment, which is out of scope.
 - `cass health` currently **exits 1** (stale index). A guard that gates on `health` before searching would disable cass entirely on a merely stale index — the exact case we must still query. **Do not gate on health.** Report it; search anyway.
-- `cass search` supports `--limit`, `--json`, `--robot-meta`, `--robot-format`, `--timeout`, and the footgun `--refresh`.
-- GNU `timeout` is at `/opt/homebrew/bin/timeout` on this machine but is **not** a macOS default. Degrade gracefully when absent.
-- Claude transcripts: `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`; subagents in `subagents/agent-*.jsonl`. Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (different schema).
-- Every Claude message record carries `.cwd`, so `jq -r 'select(.cwd)|.cwd' <file> | head -1` maps a session file to its project — no `ccbox projects` needed.
+- `cass status --json` exposes `index.last_indexed_at` (e.g. `2026-07-10T11:55:10Z`) and `age_seconds`. That **is** the stale-index coverage point.
+- **cass search hits carry no session-id field.** Verified hit JSON: `title, snippet, content, score, source_path, agent, workspace, created_at, line_number, match_type, source_id, origin_kind`. `native_session_id` must be derived (see Task 3).
+- `cass export --format json` is **lossy**: `--include-tools` and `--include-skills` are opt-in ("stripped for privacy" by default). The **raw mirror** (`raw-mirror/v1/{blobs,manifests}`, ~872 MB) holds byte-for-byte originals with manifests carrying `provider`, `original_path`, `source_size_bytes`, `blob_blake3`, `captured_at_ms`. Task 0 uses the mirror, not export.
+- GNU `timeout` is at `/opt/homebrew/bin/timeout` but is **not** a macOS default. Degrade gracefully when absent; use `-k` so a TERM-ignoring child is actually killed.
+- Claude transcripts: `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`; subagents in `subagents/agent-*.jsonl`. Every Claude message record carries `.cwd`, so `jq -r 'select(.cwd)|.cwd' <file> | head -1` maps a session to its project — no `ccbox projects` needed.
+- **Codex has a completely different schema.** Records are `{"timestamp", "type":"session_meta"|"event_msg"|"response_item"|…, "payload":{…}}` — no top-level `.message`, `.sessionId`, or `.cwd`. Any `jq` written for Claude returns **nothing** on Codex files. Codex session id comes from `session_meta.payload` or the rollout filename's trailing UUID.
 
 **House rules:** `set -euo pipefail`; scripts executable; no AI/LLM attribution anywhere; Conventional Commits, imperative, ≤72 chars. Never `git add -A` in the config repo. See `CLAUDE-patterns.md`.
 
@@ -54,45 +57,71 @@ find ~/.claude/projects -name '*.jsonl' -not -path '*/subagents/*' | wc -l
 
 Expected: cass reports ~322 `claude_code` conversations; disk shows ~81 top-level files. The gap is what exists only in cass.
 
-**Step 2: Enumerate cass's sessions as JSON**
+**Step 2: Copy the raw mirror — do NOT use `cass export` for the archive**
+
+`cass export --format json` strips tool use and skill content by default (`--include-tools` /
+`--include-skills` are opt-in, "stripped for privacy"). Archiving that would silently discard exactly
+the material that makes a session worth keeping. cass already stores **byte-for-byte originals**:
 
 ```bash
-cass sessions --json > /tmp/cass-sessions.json 2>/dev/null || cass sessions > /tmp/cass-sessions.txt
-head -40 /tmp/cass-sessions.json
+MIRROR=~/Library/Application\ Support/com.coding-agent-search.coding-agent-search/raw-mirror/v1
+ls "$MIRROR"                     # blobs  manifests  tmp
+ls "$MIRROR"/manifests | head -3
+jq . "$MIRROR"/manifests/<one>.json   # inspect the real field names before scripting
 ```
 
-Inspect the shape before scripting against it — do not assume field names. If `--json` is unsupported on 0.6.22, fall back to the text form and parse defensively.
+Manifests carry `provider`, `original_path`, `source_size_bytes`, `blob_blake3`, `captured_at_ms`
+and blob location. Verified: a session absent from disk has an intact blob whose first bytes are
+literal Claude JSONL.
 
-**Step 3: Export each session to a plain file**
+Copy `blobs/` and `manifests/` (or just the blobs whose `original_path` no longer exists) to:
 
-`cass export <PATH>` takes a *session file path*, so drive it from the enumerated list. Write one file per session into the archive directory, named `<provider>_<native_session_id>.json`.
+```
+~/Archive/ai-sessions/          # NOT inside any of the three git repos — see Step 5
+```
 
-**Step 4: Write a tool-neutral manifest**
+**Step 3: Build the tool-neutral manifest by projecting cass's own**
 
-For each exported session record: `provider`, `native_session_id`, `original_path`, `cwd`, `started_at`, `bytes`, `sha256`. This is metadata, not an index — it lets a future tool know what exists and detects corruption without understanding cass's schema.
+Do not hand-build it and do not compute a second hash — the manifests already carry `blob_blake3`.
 
 ```bash
-# after export, for each file:
-shasum -a 256 "$f" | awk '{print $1}'
+jq -s 'map({provider, original_path, source_size_bytes, blob_blake3, captured_at_ms})' \
+   "$MIRROR"/manifests/*.json > ~/Archive/ai-sessions/manifest.json
+jq 'group_by(.provider) | map({provider: .[0].provider, n: length})' ~/Archive/ai-sessions/manifest.json
 ```
 
-**Step 5: Verify the export is complete**
+Expected: `claude_code` ≈ 322 (matching the DB count), `codex` ≈ 693.
+
+**Step 4: Verify by hash and size, not by file count**
+
+`ls | wc -l` is not adequate verification for irreplaceable client work.
 
 ```bash
-ls ~/coding/claude_code/skills/my_claude_skills_claude_config/claude_docs/archive/sessions/*.json | wc -l
+# for each copied blob: recompute blake3 and compare to the manifest's blob_blake3,
+# and compare byte size to source_size_bytes. Report any mismatch and STOP.
+b3sum <blob>    # or any blake3 implementation
 ```
 
-Expected: ≥ the `claude_code` conversation count cass reported in Step 1. **If materially fewer, stop and investigate** — do not proceed to Task 1 believing the data is safe.
+**If any blob fails, stop and investigate.** Do not proceed believing the data is safe.
 
-**Step 6: Commit the manifest (not necessarily the bodies)**
+**Step 5: Keep bodies out of git; commit only the manifest**
 
-Session bodies contain client work. Decide deliberately whether they belong in the config repo or in a backed-up directory outside git. The manifest is small and belongs in git either way.
+The bodies are ~900 MB of client work and the config repo is pushed to GitHub. Bodies live in
+`~/Archive/ai-sessions/` (covered by normal backups); only the manifest goes in git. Note that
+`original_path` and `cwd` can themselves reveal client names — redact if that matters to you.
 
 ```bash
 cd ~/coding/claude_code/skills/my_claude_skills_claude_config
+mkdir -p claude_docs/archive
+cp ~/Archive/ai-sessions/manifest.json claude_docs/archive/manifest.json
 git add claude_docs/archive/manifest.json
-git commit -m "chore: archive pre-2026-07-09 session history manifest"
+git commit -m "chore: record archived session manifest"
 ```
+
+**Step 6: Note why copying out is mandatory**
+
+`cass mirror prune` can delete the mirror at any time. Until the copy exists outside cass's
+ownership, cass is the sole custodian of ~4× the Claude history that survives on disk.
 
 ---
 
@@ -103,7 +132,10 @@ Cheap, and it is the only objective way to settle lexical-vs-hybrid later and to
 **Files:**
 - Create: `~/coding/claude_code/skills/my_claude_skills_claude_config/claude_docs/research/2026-08-08_session_investigation_skill/gold-retrieval-set.md`
 
-**Step 1: Write ~20 questions you actually remember, each with its correct session ID**
+**Start with 5, not 20.** Five known queries are enough to smoke-test `find` and to catch a
+regression; growing to ~20 is worth doing later but must not block Task 0 or Task 2.
+
+**Step 1: Write the questions you actually remember, each with its correct session ID**
 
 Include deliberately fuzzy phrasings, not just exact keywords — fuzzy recall is the use case that justifies ranked search over `rg`:
 
@@ -159,20 +191,33 @@ check() {  # check <desc> <expected-exit> <args...>
   else echo "FAIL — $desc (want exit $want, got $got)"; FAIL=1; fi
 }
 
-check "allows api-version"            0  api-version
-check "allows search --json"          0  search "foo" --json --limit 5
-check "allows view"                   0  view /some/path.jsonl -n 42 --json
-check "allows pack"                   0  pack "foo" --json --max-tokens 2000
-check "refuses index"                42  index
-check "refuses doctor --fix"         42  doctor --fix
-check "refuses search --refresh"     42  search "foo" --json --refresh
-check "refuses pack --catch-up"      42  pack "foo" --catch-up
-check "refuses models install"       42  models install
-check "refuses unknown subcommand"   42  definitely-not-a-command
-check "refuses empty invocation"     42
+check "allows api-version"             0  api-version
+check "allows search --json"           0  search "foo" --json --limit 5
+check "allows view"                    0  view /some/path.jsonl -n 42 --json
+check "allows pack"                    0  pack "foo" --json --max-tokens 2000
+check "refuses index"                 42  index
+check "refuses doctor --fix"          42  doctor --fix
+check "refuses search --refresh"      42  search "foo" --json --refresh
+check "refuses pack --catch-up"       42  pack "foo" --catch-up
+check "refuses models install"        42  models install
+check "refuses unknown subcommand"    42  definitely-not-a-command
+check "refuses empty invocation"      42
 
 # A refused flag must be caught anywhere in the arg list, not just position 2.
 check "refuses --refresh at the end"  42  search "foo" --limit 5 --json --refresh
+
+# THE REGRESSION THAT MOTIVATED THE ALLOW-LIST: cass auto-corrects near-miss
+# flags and then executes them, so a deny-list of exact strings is defeated by
+# any abbreviation. Each of these must be refused BEFORE reaching cass.
+check "refuses --refres (autocorrect)"   42  search "foo" --refres
+check "refuses --refre  (autocorrect)"   42  search "foo" --refre
+check "refuses --refresh=true (= form)"  42  search "foo" --refresh=true
+check "refuses --catch-up=1   (= form)"  42  pack   "foo" --catch-up=1
+check "refuses unknown flag"             42  search "foo" --definitely-not-a-flag
+check "refuses --trace-file"             42  search "foo" --trace-file /tmp/x.jsonl
+
+# Subcommand matching must be exact, not substring.
+check "refuses two-word subcommand"      42  "view expand"
 
 exit "$FAIL"
 ```
@@ -190,7 +235,7 @@ Expected: every line `FAIL` (the guard does not exist yet), exit 1.
 
 ```bash
 #!/usr/bin/env bash
-# cass-ro — run cass read-only: allow-list of safe subcommands, hard timeout.
+# cass-ro — run cass read-only: allow-lists for both subcommand and flags, hard timeout.
 #
 # Exit codes:
 #   0     cass ran and succeeded
@@ -200,38 +245,60 @@ Expected: every line `FAIL` (the guard does not exist yet), exit 1.
 #
 # The caller treats any non-zero as "fall through to rg/jq".
 #
-# Why an allow-list rather than a deny-list: `cass definitely-not-a-command`
-# exits 0, so cass cannot be trusted to reject what we did not intend to run.
+# WHY ALLOW-LISTS, NOT DENY-LISTS — this is the whole point of the script:
+# cass auto-corrects near-miss input and then EXECUTES the correction.
+#   `cass api-version --js`            -> "Corrected typo '--js' to '--json'", runs, exit 0
+#   `cass definitely-not-a-command`    -> "Assumed 'search' subcommand", runs a search, exit 0
+# A deny-list of exact strings is therefore worthless: `--refres` slips past it and
+# cass turns it into `--refresh`. Anything not explicitly known-safe is refused.
+#
+# SCOPE OF THE GUARANTEE: this prevents *intentionally* invoking indexing/repair.
+# cass may still write its own derived state during a plain search (observed:
+# exit 5, kind "lexical-rebuild"). Read-only here means "never mutates vendor
+# session files, never intentionally indexes or repairs" — not "zero writes".
 set -uo pipefail
 
 CASS_BIN="${CASS_RO_BIN:-cass}"
 TIMEOUT_SECS="${CASS_RO_TIMEOUT:-8}"
 
-ALLOWED_SUBCOMMANDS="api-version capabilities status health search view expand pack sessions stats introspect triage"
-FORBIDDEN_FLAGS="--refresh --catch-up --fix --apply --force-rebuild --full"
+# Only what the skill actually needs on the production path.
+ALLOWED_SUBCOMMANDS="api-version status search view expand pack sessions"
+# Every flag the skill is allowed to pass. Anything else starting with '-' is refused.
+ALLOWED_FLAGS="--json --robot-meta --robot-format --limit --offset --timeout --mode --fields
+--max-content-length --max-tokens --max-evidence --max-sessions --max-excerpt-chars
+--workspace --agent --since --until --days --line --context -n -C"
 
 die() { echo "cass-ro: refused: $*" >&2; exit 42; }
 
 [ $# -ge 1 ] || die "no subcommand given"
 
-sub="$1"
-case " $ALLOWED_SUBCOMMANDS " in
-  *" $sub "*) ;;
-  *) die "subcommand '$sub' is not on the allow-list" ;;
-esac
+# Exact compare — a substring match would let "view expand" through as one arg.
+sub="$1"; ok=0
+for a in $ALLOWED_SUBCOMMANDS; do [ "$sub" = "$a" ] && { ok=1; break; }; done
+[ "$ok" -eq 1 ] || die "subcommand '$sub' is not allow-listed"
 
+shift
 for arg in "$@"; do
-  for bad in $FORBIDDEN_FLAGS; do
-    [ "$arg" = "$bad" ] && die "flag '$bad' mutates state"
-  done
+  case "$arg" in
+    -*)
+      # Reject the '=' form too: match only the part before '='.
+      base="${arg%%=*}"; ok=0
+      for a in $ALLOWED_FLAGS; do [ "$base" = "$a" ] && { ok=1; break; }; done
+      [ "$ok" -eq 1 ] || die "flag '$arg' is not allow-listed"
+      ;;
+  esac
 done
 
+# cass writes trace JSONL when these are set — strip them regardless of caller env.
+unset CASS_TRACE_FILE CASS_SEARCH_MODE
+
 # GNU timeout is not a macOS default; degrade to no timeout rather than failing.
-if command -v timeout >/dev/null 2>&1;      then exec timeout "${TIMEOUT_SECS}s" "$CASS_BIN" "$@"
-elif command -v gtimeout >/dev/null 2>&1;   then exec gtimeout "${TIMEOUT_SECS}s" "$CASS_BIN" "$@"
+# -k ensures a TERM-ignoring cass is actually killed rather than orphaned.
+if command -v timeout >/dev/null 2>&1;    then exec timeout -k 2s "${TIMEOUT_SECS}s" "$CASS_BIN" "$sub" "$@"
+elif command -v gtimeout >/dev/null 2>&1; then exec gtimeout -k 2s "${TIMEOUT_SECS}s" "$CASS_BIN" "$sub" "$@"
 else
-  echo "cass-ro: warning: no timeout(1); running without a time limit" >&2
-  exec "$CASS_BIN" "$@"
+  echo "cass-ro: warning: no timeout(1); hang containment is DISABLED" >&2
+  exec "$CASS_BIN" "$sub" "$@"
 fi
 ```
 
@@ -281,17 +348,30 @@ git commit -m "feat: add read-only cass guard with allow-list and timeout"
 name: session-history
 description: Search and read past Claude Code and Codex sessions across all projects. Use when asked to find a session where something was worked on, recall how something was done before, or read a specific past session. Read-only; never modifies session data or indexes.
 context: fork
+background: false
 ---
 ```
 
-`context: fork` runs the skill in its own subagent so transcripts never enter the caller's context. Note the fork still loads harness context (CLAUDE.md) — it is not a blank process.
+`context: fork` runs the skill in its own subagent so transcripts never enter the caller's context.
 
-**Step 2: Document the two operations and the evidence envelope**
+**`background: false` is required, not optional.** Forked skills default to `background: true`
+(v2.1.218+) — the caller keeps working and the result arrives later. A retrieval skill whose caller
+always needs the envelope before it can proceed must block.
 
-The body must specify exactly two operations. Anything more breaks the retrieval-only boundary.
+Note the fork still loads harness context (CLAUDE.md) because no `agent:` is set (default
+`general-purpose`). Setting `agent: Explore` would skip CLAUDE.md — don't change this casually.
+
+**Step 2: Document the three operations and the evidence envelope**
 
 - **`find <query>`** — ranked candidate sessions. Default: all projects, Claude + Codex.
-- **`evidence <query>`** — bounded cited excerpts via `cass pack`. **Not** "synthesize an answer": the caller synthesizes.
+- **`read <session-id>`** — a known session, in bounded windows. Required by `handover-from-session`
+  (Task 6) and by any lookup of a session that now exists only in the archive.
+- **`evidence <query>`** — bounded cited excerpts via `cass pack`. **Not** "synthesize an answer":
+  the caller synthesizes.
+
+An earlier draft said "exactly two operations", which contradicted both the skill's own goal ("find
+**and read**") and Task 6's need for archived full-session reads. Three is the honest number. All
+three are retrieval; none performs analysis, so the retrieval-only boundary holds.
 
 Every result is an evidence envelope. Consumers must never see cass row IDs, cass's SQLite schema, encoded Claude project-directory names, or Codex rollout filename conventions:
 
@@ -311,24 +391,54 @@ index_freshness     fresh | stale:<days> | unknown
 
 This is the part most likely to be got wrong, so state it as an explicit procedure:
 
-1. Probe: `cass-ro api-version --json`, then `cass-ro status --json`. Record index freshness. **Do not gate on `cass health`** — it exits 1 on a merely stale index, which must still be searched.
-2. Run `cass-ro search "<query>" --json --limit N`.
-3. **If the index is stale, also search the raw delta** — files modified since the index coverage point — and merge by `native_session_id`. A stale-but-healthy cass returns a confident, well-ranked, *incomplete* answer; that is more dangerous than a failure.
-4. If `cass-ro` exits non-zero (refused, timed out, cass missing), fall through to the raw path for the whole query and mark `index_freshness: unknown`.
+1. Probe: `cass-ro api-version --json`, then `cass-ro status --json`. Read `index.last_indexed_at` — **that is the coverage point**. **Do not gate on `cass health`** — it exits 1 on a merely stale index, which must still be searched.
+2. Run `cass-ro search "<query>" --json --limit N --mode lexical`.
+3. **Validate before trusting.** Exit 0 does not mean cass did what you asked — it reinterprets unknown input as a search and still exits 0. Treat output as valid only if it parses as JSON with the expected top-level keys; otherwise use the raw path.
+4. **If the index is stale, also search the raw delta** and merge. Not optional: the index has been stale ~31 days, so "union" currently means "cass for older, raw for the last month."
+
+   ```bash
+   # BSD find rejects the ISO 'Z' form; convert first.
+   COVER="$(jq -r '.index.last_indexed_at' <<<"$STATUS")"      # 2026-07-10T11:55:10Z
+   COVER_BSD="$(date -jf '%Y-%m-%dT%H:%M:%SZ' "$COVER" '+%Y-%m-%d %H:%M:%S UTC')"
+   find ~/.claude/projects ~/.codex/sessions -name '*.jsonl' -newermt "$COVER_BSD"
+   ```
+
+5. **Merge key.** cass hits carry **no session-id field** (only `source_path`, `agent`, `workspace`, `created_at`, `line_number`, …). Derive it:
+   - Claude → the filename stem: `<session-id>.jsonl`
+   - Codex → the trailing UUID of `rollout-*.jsonl`, or `session_meta.payload`
+
+   Merge and de-duplicate on `(provider, native_session_id)`.
+6. If `cass-ro` exits non-zero (refused, timed out, cass missing), fall through to the raw path for the whole query and mark `index_freshness: unknown`.
 
 **Step 4: Write the raw path with byte bounds**
 
+**Two projections are required — Claude's `jq` returns nothing on Codex files.**
+
 ```bash
-# Locate files — never print matching lines. A single Codex JSONL record can be 60 MB.
+# Locate files — never print matching lines. A single Codex JSONL record can be ~60 MB.
 rg -l --fixed-strings "<term>" ~/.claude/projects ~/.codex/sessions
 
-# Project fields under an explicit byte cap.
+# Claude: top-level .message / .sessionId / .cwd
 jq -r 'select(.type=="user" or .type=="assistant")
        | {t: .timestamp, r: .message.role, s: .sessionId, c: .cwd,
-          x: (.message.content | tostring | .[0:400])}' "<file>"
+          x: (.message.content | tostring | .[0:400])}' "<claude-file>"
+
+# Codex: everything hangs off .payload; session id and cwd come from session_meta
+jq -r 'select(.type=="response_item" or .type=="event_msg")
+       | {t: .timestamp, r: (.payload.role // .type),
+          x: (.payload.content // .payload | tostring | .[0:400])}' "<codex-file>"
+
+jq -r 'select(.type=="session_meta") | {s: .payload.id, c: .payload.cwd}' "<codex-file>"
 ```
 
-Rules to state explicitly: `rg -l` to locate, never bare `rg -n` on JSONL; cap excerpt **bytes**, not lines; tolerate unknown record types (filter on `.type` + `.message`, ignore the rest).
+Rules to state explicitly:
+
+- `rg -l` to locate, **never bare `rg -n` on JSONL** — one record can be tens of MB.
+- `.[0:400]` slices *characters after parsing*, so `jq` still ingests the whole record. For files
+  with known-huge records, get byte offsets first (`rg -abo`) and extract a bounded byte window
+  before parsing.
+- Tolerate unknown record types — filter for what you recognise, ignore the rest. The format drifts
+  additively and Anthropic documents it as internal.
 
 **Step 5: State the prohibitions**
 
@@ -398,6 +508,16 @@ CASS_RO_TIMEOUT=1 ./session-history/scripts/cass-ro search "foo" --json; echo "e
 ```
 
 Then confirm the skill still answers a query with cass unavailable, via the raw path alone.
+
+**Step 5 (optional): give the guard actual teeth via permissions**
+
+The guard is a convention plus a timeout — an agent can always run bare `cass` and bypass it. The
+only mechanism that makes it real enforcement is a Claude Code permission rule: deny `Bash(cass *)`
+and allow the `cass-ro` path. Without that, be honest that the script buys uniform fall-through, a
+timeout, and one executable statement of the invariant — not a security boundary.
+
+Decide deliberately. Adding the deny rule also blocks *you* from running `cass` ad hoc in this
+project, which may not be worth it.
 
 ---
 
@@ -469,13 +589,14 @@ Use `claude_docs/templates/adr-template.md` (MADR 4.0.0).
 
 ## Definition of Done
 
-- [ ] `test-cass-ro.sh` passes; `shellcheck` clean
-- [ ] Gold set runs against `find` with a recorded hit rate
+- [ ] `test-cass-ro.sh` passes — **including the autocorrect cases** (`--refres`, `--refre`, `--refresh=true`); `shellcheck` clean
+- [ ] Gold set (5+) runs against `find` with a recorded hit rate
 - [ ] The skill answers a query with cass unavailable (raw path only)
-- [ ] Stale-index union verified: a session newer than the index is still found
+- [ ] **Stale-index union verified end-to-end**: a session created *after* `index.last_indexed_at` is returned by `find`. This is the headline fix — if it isn't tested, it isn't done.
+- [ ] **Codex path verified separately from Claude** — run `find` and `read` against a real `~/.codex/sessions` rollout and confirm non-empty output. A Claude-only `jq` returns nothing on Codex and fails silently.
 - [ ] `grep -rc ccbox` returns zero across both consumer skills
 - [ ] `ccbox-insights` deleted, its heuristics preserved in `references/`
-- [ ] Pre-2026-07-09 history exported and manifest committed
+- [ ] Raw mirror copied out of cass, **every blob verified by blake3 + size**, manifest committed, bodies outside git
 - [ ] Two ADRs written
 - [ ] Session log in `claude_docs/session_progress_details/`; `CLAUDE-activeContext.md` and `CLAUDE-decisions.md` updated
 
