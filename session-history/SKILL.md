@@ -177,13 +177,15 @@ mostly subagents.
 
 Handle them explicitly:
 
-- Default `find` to **top-level sessions only** — exclude `*/subagents/*`.
+- Default `find` to **top-level sessions only** — exclude `**/subagents/**`.
+  Note the doubled stars: `!*/subagents/*` silently fails to exclude anything (verified: it let
+  202 subagent files through), because a single `*` does not span path separators mid-pattern.
 - When a subagent transcript is the best match, report the **parent** as `native_session_id` and set
   `hit_locator` to point into the subagent file, so the caller can still reach the evidence.
 
 ```bash
 # top-level sessions only
-rg -l --fixed-strings "<term>" ~/.claude/projects --glob '*.jsonl' --glob '!*/subagents/*'
+rg -l --fixed-strings "<term>" ~/.claude/projects --glob '*.jsonl' --glob '!**/subagents/**'
 
 # parent id from a subagent hit
 basename "$(dirname "$(dirname "$SUBAGENT_PATH")")"
