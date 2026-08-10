@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# cass-ro — run cass read-only: allow-lists for both subcommand and flags, hard timeout.
+#
+# Exit codes:
+#   0     cass ran and succeeded
+#   42    refused by this guard (never reached cass)
+#   124   timed out (GNU timeout convention)
+#   other cass's own exit code
+#
+# The caller treats any non-zero as "fall through to rg/jq".
+#
+# WHY ALLOW-LISTS, NOT DENY-LISTS — this is the whole point of the script:
+# cass auto-corrects near-miss input and then EXECUTES the correction.
+#   `cass api-version --js`            -> "Corrected typo '--js' to '--json'", runs, exit 0
+#   `cass definitely-not-a-command`    -> "Assumed 'search' subcommand", runs a search, exit 0
+# A deny-list of exact strings is therefore worthless: `--refres` slips past it and
+# cass turns it into `--refresh`. Anything not explicitly known-safe is refused.
+#
+# SCOPE OF THE GUARANTEE: this prevents *intentionally* invoking indexing/repair.
+# cass may still write its own derived state during a plain search (observed:
+# exit 5, kind "lexical-rebuild"). Read-only here means "never mutates vendor
+# session files, never intentionally indexes or repairs" — not "zero writes".
+set -uo pipefail
+
+CASS_BIN="${CASS_RO_BIN:-cass}"
+TIMEOUT_SECS="${CASS_RO_TIMEOUT:-8}"
+
+# Only what the skill actually needs on the production path.
+ALLOWED_SUBCOMMANDS="api-version status search view expand pack sessions"
+# Every flag the skill is allowed to pass. Anything else starting with '-' is refused.
+ALLOWED_FLAGS="--json --robot-meta --robot-format --limit --offset --timeout --mode --fields
+--max-content-length --max-tokens --max-evidence --max-sessions --max-excerpt-chars
+--workspace --agent --since --until --days --line --context -n -C"
+
+die() { echo "cass-ro: refused: $*" >&2; exit 42; }
+
+[ $# -ge 1 ] || die "no subcommand given"
+
+# Exact compare — a substring match would let "view expand" through as one arg.
+sub="$1"; ok=0
+for a in $ALLOWED_SUBCOMMANDS; do [ "$sub" = "$a" ] && { ok=1; break; }; done
+[ "$ok" -eq 1 ] || die "subcommand '$sub' is not allow-listed"
+
+shift
+for arg in "$@"; do
+  case "$arg" in
+    -*)
+      # Reject the '=' form too: match only the part before '='.
+      base="${arg%%=*}"; ok=0
+      for a in $ALLOWED_FLAGS; do [ "$base" = "$a" ] && { ok=1; break; }; done
+      [ "$ok" -eq 1 ] || die "flag '$arg' is not allow-listed"
+      ;;
+  esac
+done
+
+# cass writes trace JSONL when these are set — strip them regardless of caller env.
+unset CASS_TRACE_FILE CASS_SEARCH_MODE
+
+# GNU timeout is not a macOS default; degrade to no timeout rather than failing.
+# -k ensures a TERM-ignoring cass is actually killed rather than orphaned.
+if command -v timeout >/dev/null 2>&1;    then exec timeout -k 2s "${TIMEOUT_SECS}s" "$CASS_BIN" "$sub" "$@"
+elif command -v gtimeout >/dev/null 2>&1; then exec gtimeout -k 2s "${TIMEOUT_SECS}s" "$CASS_BIN" "$sub" "$@"
+else
+  echo "cass-ro: warning: no timeout(1); hang containment is DISABLED" >&2
+  exec "$CASS_BIN" "$sub" "$@"
+fi
