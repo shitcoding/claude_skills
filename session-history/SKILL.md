@@ -162,10 +162,35 @@ known-huge records, get byte offsets first (`rg -abo`) and cut a bounded byte wi
 
 ## Deriving the session id
 
-cass hits carry **no session-id field**. Derive it:
+cass hits carry **no session-id field**. Derive it from the path:
 
-- **Claude** — the filename stem: `<session-id>.jsonl`
-- **Codex** — the trailing UUID of `rollout-*.jsonl`, or `session_meta.payload.id`
+| Path shape | `native_session_id` |
+|---|---|
+| `~/.claude/projects/<proj>/<uuid>.jsonl` | the filename stem |
+| `~/.claude/projects/<proj>/<parent-uuid>/subagents/agent-*.jsonl` | **the parent uuid** — the directory two levels up |
+| `~/.codex/sessions/…/rollout-*.jsonl` | trailing UUID of the filename, or `session_meta.payload.id` |
+
+**Subagent transcripts are not sessions.** `agent-a61d4788….jsonl` is a subagent's transcript living
+under its parent; its filename stem is not a resumable session id and returning it as one is wrong.
+There are currently ~541 subagent transcripts against ~129 sessions, so an unfiltered search returns
+mostly subagents.
+
+Handle them explicitly:
+
+- Default `find` to **top-level sessions only** — exclude `*/subagents/*`.
+- When a subagent transcript is the best match, report the **parent** as `native_session_id` and set
+  `hit_locator` to point into the subagent file, so the caller can still reach the evidence.
+
+```bash
+# top-level sessions only
+rg -l --fixed-strings "<term>" ~/.claude/projects --glob '*.jsonl' --glob '!*/subagents/*'
+
+# parent id from a subagent hit
+basename "$(dirname "$(dirname "$SUBAGENT_PATH")")"
+```
+
+Also scope `rg` with `--glob '*.jsonl'`: `~/.claude/projects` contains `sessions-index.json` and
+other non-transcript files that will otherwise appear as hits.
 
 ## Session titles
 
