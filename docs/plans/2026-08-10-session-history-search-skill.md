@@ -2,6 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+> **Note (2026-08-11):** the skill was renamed `session-history` → **`ai-sessions-reader`** after
+> implementation, to avoid autocomplete collisions with the `session-logs-*` commands. This plan
+> keeps the original name throughout as a record of the work as executed; the shipped skill lives
+> at `ai-sessions-reader/`.
+
 **Goal:** A read-only Claude Code skill that finds and reads past Claude Code and Codex sessions across all projects, so the agent stops rediscovering `ccbox` every session — and so `handover-from-session` and `refresh-harness` stop depending on an abandoned tool.
 
 **Architecture:** Raw vendor JSONL is the durable substrate; `cass` is a replaceable ranked-search accelerator queried through a tiny allow-list guard; `rg`/`jq` is the always-available floor. The skill returns a stable *evidence envelope* so consumers never learn backend identifiers. It performs no analysis and mutates nothing.

@@ -1,6 +1,6 @@
 # Recipe: mining sessions for lessons
 
-> **This is a recipe, not an operation.** The `session-history` skill does not perform this analysis
+> **This is a recipe, not an operation.** The `ai-sessions-reader` skill does not perform this analysis
 > and promises no output schema for it. Read it if you want the lens; the interpretation is yours.
 >
 > Salvaged from `ccbox-insights` (retired 2026-08) — the tool it depended on was abandoned, but this
