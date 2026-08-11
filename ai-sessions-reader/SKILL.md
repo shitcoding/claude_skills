@@ -1,11 +1,11 @@
 ---
-name: session-history
+name: ai-sessions-reader
 description: Search and read past Claude Code and Codex sessions across all projects. Use when asked to find a session where something was worked on, recall how something was done or decided before, or read a specific past session by id. Read-only — never modifies session data or search indexes.
 context: fork
 background: false
 ---
 
-# session-history
+# ai-sessions-reader
 
 Finds and reads past agent sessions. **Retrieval only**: it returns evidence, never conclusions.
 Whoever calls it decides what the evidence means.
