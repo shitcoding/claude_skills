@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# ctx — print the current Claude Code session's context-window usage.
+#
+#   ctx           integer percent, identical to the status line (e.g. 43)
+#   ctx --exact   percent to one decimal, from the raw token counts (e.g. 42.6)
+#   ctx --tokens  context tokens in use (input + cache_creation + cache_read)
+#   ctx --json    the whole status line payload
+#
+# Reads the payload tee'd by statusline.sh, keyed by this session's own id. Exits
+# non-zero when the payload is unavailable or carries no usage yet (a fresh session
+# before its first API response) — callers should fall back rather than treat it as 0.
+#
+# Env: CLAUDE_CTX_DIR (payload directory, default ~/.claude/ctx)
+set -uo pipefail
+
+MODE="${1:---pct}"
+
+SID="${CLAUDE_CODE_SESSION_ID:-}"
+[ -n "$SID" ] || { echo "ctx: CLAUDE_CODE_SESSION_ID is not set — not inside a Claude Code session?" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "ctx: jq required" >&2; exit 1; }
+
+F="${CLAUDE_CTX_DIR:-$HOME/.claude/ctx}/$SID.json"
+
+# The status line render is debounced ~300ms behind the message that triggered it, so a
+# skill invoked early in a turn can outrun the write.
+for _ in 1 2 3 4 5; do
+  [ -s "$F" ] && break
+  sleep 0.3 2>/dev/null || true
+done
+[ -s "$F" ] || { echo "ctx: no payload at $F — is statusline.sh wired into settings.json?" >&2; exit 1; }
+
+case "$MODE" in
+  --pct)
+    jq -e -r '.context_window.used_percentage | select(. != null)' "$F"
+    ;;
+  --exact)
+    jq -e -r '.context_window as $c
+      | select(($c.current_usage != null) and (($c.context_window_size // 0) > 0))
+      | ($c.current_usage.input_tokens
+         + $c.current_usage.cache_creation_input_tokens
+         + $c.current_usage.cache_read_input_tokens) * 100 / $c.context_window_size
+      | (. * 10 | round) / 10' "$F"
+    ;;
+  --tokens)
+    jq -e -r '.context_window.current_usage | select(. != null)
+      | .input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens' "$F"
+    ;;
+  --json)
+    jq -e . "$F"
+    ;;
+  *)
+    echo "ctx: unknown option '$MODE' (use --pct, --exact, --tokens or --json)" >&2
+    exit 2
+    ;;
+esac
