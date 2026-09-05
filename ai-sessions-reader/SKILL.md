@@ -35,7 +35,7 @@ provider            claude | codex
 native_session_id   the vendor's own session id (see "Deriving the session id")
 project             the working directory of the session
 timestamp           ISO 8601
-source_kind         live | preserved      (preserved = from ~/Archive/ai-sessions)
+source_kind         live | preserved      (preserved = from ~/backups/ai_sessions_backups)
 source_locator      absolute path to the transcript
 hit_locator         line_number
 bounded_excerpt     capped — see "Bounding output"
@@ -152,8 +152,8 @@ manifest rather than guessing at blob paths:
 ```bash
 jq -r --arg id "<session-id>" \
   '.[] | select(.original_path | test($id)) | .blob_blake3' \
-  ~/Archive/ai-sessions/manifest.json
-# blob lives at ~/Archive/ai-sessions/blobs/blake3/<first-2-chars>/<hash>.raw
+  ~/backups/ai_sessions_backups/manifest.json
+# blob lives at ~/backups/ai_sessions_backups/blobs/blake3/<first-2-chars>/<hash>.raw
 ```
 
 Set `source_kind: preserved` and keep `source_locator` pointing at the blob. Note the blob's filename
