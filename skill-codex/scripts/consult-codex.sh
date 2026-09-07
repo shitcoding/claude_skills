@@ -34,9 +34,14 @@ REVIEW_ARGS=()
 
 # Auto-detect best available model from bundled catalog (13ms, no network).
 # Picks the model with lowest priority number and visibility=list.
+# On failure MODEL is left EMPTY and -m is omitted entirely, so codex falls back to its own
+# current default. Deliberately NOT a hardcoded slug: the previous fallback was "gpt-5.6", which
+# the catalog no longer contains, so a detection failure passed codex a nonexistent model and
+# turned a recoverable hiccup into a hard error. A hardcoded default always rots — that is the
+# whole reason detection exists.
 MODEL=$(codex debug models --bundled 2>/dev/null \
     | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
-    || echo "gpt-5.6")  # Fallback if detection fails
+    || true)
 
 # --- Check required binaries ---
 if ! command -v codex &>/dev/null; then
@@ -181,11 +186,11 @@ case "$MODE" in
     ask)
         CMD=(codex exec
             --json
-            -m "$MODEL"
             -c "model_reasoning_effort=\"$EFFORT\""
             -s "$SANDBOX"
             --disable hooks
             -o "$RESULT_FILE")
+        [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
         [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
         CMD+=(-)
@@ -198,10 +203,10 @@ case "$MODE" in
             CMD+=(--last)
         fi
         CMD+=(--json
-            -m "$MODEL"
             -c "model_reasoning_effort=\"$EFFORT\""
             --disable hooks
             -o "$RESULT_FILE")
+        [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
         [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
         CMD+=(-)
@@ -229,21 +234,21 @@ case "$MODE" in
             OWNED_TEMP_FILE=""
             CMD=(codex exec
                 --json
-                -m "$MODEL"
                 -c "model_reasoning_effort=\"$EFFORT\""
                 -s "$SANDBOX"
                 --disable hooks
                 -o "$RESULT_FILE")
+            [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
             [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
             [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
             CMD+=(-)
         else
             CMD=(codex exec review
                 --json
-                -m "$MODEL"
                 -c "model_reasoning_effort=\"$EFFORT\""
                 --disable hooks
                 -o "$RESULT_FILE")
+            [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
             [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
             [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
             if [[ ${#REVIEW_ARGS[@]} -gt 0 ]]; then

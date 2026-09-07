@@ -65,18 +65,26 @@ For short non-sensitive prompts, inline is also supported:
 
 ## Configuration
 
-Defaults: best available model (auto-detected), `high` reasoning effort, `read-only` sandbox, `120s` idle timeout.
+Defaults: best available model (auto-detected), `high` reasoning effort, `read-only` sandbox, `300s` idle timeout.
+
+**Model selection is automatic and needs no maintenance.** The script reads Codex's bundled catalog
+(`codex debug models --bundled`, ~13 ms, no network) and picks the entry with the lowest `priority`
+among those with `visibility: list` — i.e. whatever Codex currently ships as its flagship. New model
+generations are picked up with no edit here. If detection fails, `-m` is omitted entirely and Codex
+uses its own default; the script never pins a hardcoded slug, because every hardcoded default has
+gone stale.
 
 **Timeout behavior** — the script uses an activity-based idle watchdog, NOT a wall-clock timeout:
 - Codex runs with `--json`, streaming JSONL events as it works (thinking, reading files, tool calls)
 - The script monitors this event stream for activity
 - As long as events keep flowing, codex runs indefinitely — no arbitrary time limit
-- If no events for `--timeout` seconds (default 120s), codex is considered hung and killed
-- This means a 10-minute review that's actively working will complete successfully, while a truly hung process is caught within 2 minutes
+- If no events for `--timeout` seconds (default 300s), codex is considered hung and killed
+- This means a 10-minute review that's actively working will complete successfully, while a truly hung process is caught within 5 minutes
 
 ```bash
-# Override model and effort
-"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-5.6 --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
+# Override model and effort — only needed to force a NON-default model.
+# List valid slugs with: codex debug models --bundled
+"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-6-astra --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
 
 # Fast mode (1.5x speed, 2x credits) — same quality, faster inference
 "$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --fast --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
