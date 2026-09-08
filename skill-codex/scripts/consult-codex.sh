@@ -32,16 +32,7 @@ FAST=0
 ALLOW_FULL_ACCESS=0
 REVIEW_ARGS=()
 
-# Auto-detect best available model from bundled catalog (13ms, no network).
-# Picks the model with lowest priority number and visibility=list.
-# On failure MODEL is left EMPTY and -m is omitted entirely, so codex falls back to its own
-# current default. Deliberately NOT a hardcoded slug: the previous fallback was "gpt-5.6", which
-# the catalog no longer contains, so a detection failure passed codex a nonexistent model and
-# turned a recoverable hiccup into a hard error. A hardcoded default always rots — that is the
-# whole reason detection exists.
-MODEL=$(codex debug models --bundled 2>/dev/null \
-    | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
-    || true)
+MODEL=""   # resolved after argument parsing, and only when --model was not supplied
 
 # --- Check required binaries ---
 if ! command -v codex &>/dev/null; then
@@ -108,6 +99,26 @@ while [[ $# -gt 0 ]]; do
         *)             PROMPT="$*"; break ;;
     esac
 done
+
+# --- Resolve the model (only when the caller did not pick one) ---
+# The catalog gives each model a `priority`; codex's own picker takes the lowest-numbered
+# visible entry as its DEFAULT. That is what this mirrors — the vendor's recommended default,
+# which today is also the flagship, but priority is display order, NOT a capability ranking
+# (e.g. `gpt-reserve` sits at priority 3 and is "fast and affordable"; it is only kept out of
+# the running by visibility=hide). No hardcoded slug: a pinned default always rots — the
+# previous one, "gpt-5.6", had already vanished from the catalog.
+# Resolved after parsing so that an explicit --model skips the lookup entirely.
+if [[ -z "$MODEL" ]]; then
+    MODEL=$(codex debug models --bundled 2>/dev/null \
+        | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
+        || true)
+    if [[ -z "$MODEL" ]]; then
+        # Deliberately NOT silent. With -m omitted, codex resolves the model from
+        # ~/.codex/config.toml first — which may pin an older model — and only then its own
+        # built-in default. That is a real downgrade the caller has to be able to see.
+        echo "Warning: model auto-detection failed — codex will use the model from ~/.codex/config.toml, or its built-in default" >&2
+    fi
+fi
 
 # --- Resolve prompt source ---
 # Uses fd-based delivery: open file on fd 3, unlink path, then redirect to codex stdin.
@@ -289,10 +300,13 @@ else
     CODEX_PID=$!
 fi
 
-# Get combined CPU time (user + system) for a process tree
+# Cumulative CPU time (user + system) for the codex process ITSELF.
+# Known ceiling: this is the parent PID only — `ps -o time= -p` does not include children,
+# despite what an earlier version of this comment claimed. It is therefore a silence
+# heuristic, not reliable hang detection: local CPU cannot tell you whether remote inference
+# is still progressing, and work delegated to a child would not register here. At high
+# reasoning efforts (`max`, `ultra`) prefer raising --timeout over trusting this signal.
 get_cpu_time() {
-    # ps -o time= gives cumulative CPU time for the process
-    # We check the codex process and its children
     ps -o time= -p "$1" 2>/dev/null | tr -d ' ' || echo "0:00.00"
 }
 
