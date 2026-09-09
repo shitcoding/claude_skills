@@ -67,21 +67,47 @@ For short non-sensitive prompts, inline is also supported:
 
 Defaults: best available model (auto-detected), `high` reasoning effort, `read-only` sandbox, `300s` idle timeout.
 
-**Model selection is automatic and needs no maintenance.** The script reads Codex's bundled catalog
-(`codex debug models --bundled`, ~18 ms, no network) and picks the entry with the lowest `priority`
-among those with `visibility: list` — which mirrors how Codex picks its **own default**. New model
-generations are therefore picked up with no edit here. Two honest limits:
+**Model selection is automatic and needs no maintenance.** The script runs `codex debug models` and
+picks the entry with the lowest `priority` among those with `visibility: list` — which mirrors how
+Codex picks its **own default**. New model generations are picked up with no edit here.
+
+Not `--bundled`: that flag reads only the catalog frozen into the installed binary, which drifts from
+what the account can actually run. The bare call is refresh-with-cached-fallback (ETag + TTL cache in
+`~/.codex/models_cache.json`) — it serves from cache when fresh, and on a dead network still returns
+the cached catalog in tens of milliseconds instead of hanging.
+
+Three honest limits:
 
 - `priority` is Codex's display/preference order, **not** a capability ranking. Today the default and
   the most capable model coincide (`gpt-6-astra`), but a cheap model could take priority 1 in future
   and this would follow it. `gpt-reserve` already sits at priority 3 and is "fast and affordable" —
   only `visibility: hide` keeps it out of the running.
+- The catalog cache is keyed on `client_version`/`etag`/`fetched_at` with **no account identity**, so
+  this is "fresher than bundled", *not* "guaranteed to match your entitlements".
 - If detection fails, `-m` is omitted and the script prints a warning to stderr. Omitting `-m` does
   **not** mean "Codex picks its flagship" — Codex reads `model` from `~/.codex/config.toml` first,
   which may pin an older model. The warning exists because that downgrade is otherwise silent.
 
 An explicit `--model` skips the lookup entirely. The script never pins a hardcoded slug: every
 hardcoded default it has carried has gone stale.
+
+**Reasoning effort.** Default is `high`. The available levels are **per model** — the list below is
+`gpt-6-astra`'s; `gpt-5.5` and `gpt-5.3-codex-spark` stop at `xhigh`, `gpt-reserve` at `max`. Check
+with `codex debug models`. There is no validation in the script: an unsupported level is rejected by
+Codex itself, which is the authoritative answer.
+
+| `--effort` | |
+|---|---|
+| `low` | Fast responses with lighter reasoning |
+| `medium` | Balances speed and reasoning depth for everyday tasks |
+| `high` | **Default.** Greater reasoning depth for complex problems |
+| `xhigh` | Extra high reasoning depth for complex problems |
+| `max` | Maximum reasoning depth for the hardest problems |
+| `ultra` | Maximum reasoning with automatic task delegation |
+
+`max` and `ultra` consume plan allowance faster and can stay silent for long stretches — pair them
+with a raised `--timeout` (see below). `ultra`'s delegation is not guaranteed to engage under
+headless `codex exec`; treat the label as a request, not a promise.
 
 **Timeout behavior** — the script uses an activity-based idle watchdog, NOT a wall-clock timeout:
 - Codex runs with `--json`, streaming JSONL events as it works (thinking, reading files, tool calls)
@@ -92,7 +118,7 @@ hardcoded default it has carried has gone stale.
 
 ```bash
 # Override model and effort — only needed to force a NON-default model.
-# List valid slugs with: codex debug models --bundled
+# List valid slugs and their supported effort levels with: codex debug models
 "$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --model gpt-6-astra --effort xhigh --prompt-file /tmp/codex-prompt-xxx.md
 
 # Fast mode — same quality, faster inference. The multiplier is per-model and lives in the

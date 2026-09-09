@@ -108,8 +108,17 @@ done
 # the running by visibility=hide). No hardcoded slug: a pinned default always rots — the
 # previous one, "gpt-5.6", had already vanished from the catalog.
 # Resolved after parsing so that an explicit --model skips the lookup entirely.
+#
+# Deliberately NOT --bundled. `--bundled` reads only the catalog frozen into the installed
+# binary, which drifts from what the account can actually run. The bare call is already
+# refresh-with-cached-fallback (ETag + TTL cache in ~/.codex/models_cache.json): it serves
+# from cache when fresh, and on a dead network it still returns the cached catalog in tens
+# of milliseconds rather than hanging. So there is nothing to gain by hand-rolling a
+# timeout-and-fall-back-to-bundled wrapper — the CLI does that internally.
+# Caveat, so nobody over-claims it later: the cache keys are client_version/etag/fetched_at
+# with NO account identity, so this is "fresher", not "guaranteed to match your entitlements".
 if [[ -z "$MODEL" ]]; then
-    MODEL=$(codex debug models --bundled 2>/dev/null \
+    MODEL=$(codex debug models 2>/dev/null \
         | python3 -c "import sys,json; models=json.load(sys.stdin)['models']; print(min((m for m in models if m.get('visibility')=='list'), key=lambda m: m['priority'])['slug'])" 2>/dev/null \
         || true)
     if [[ -z "$MODEL" ]]; then
