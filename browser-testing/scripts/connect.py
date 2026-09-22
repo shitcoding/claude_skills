@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-connect.py — Connect to headed Chrome via CDP for browser automation.
+connect.py — Connect to the skill's Chrome (headless by default) via CDP.
 
 Library module — the CLI lives in browse.py. Invoke both through the `bt` wrapper.
 
@@ -30,7 +30,7 @@ from playwright.async_api import async_playwright, Page, BrowserContext, Browser
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SKILL_DIR = SCRIPT_DIR.parent
 SETUP_SCRIPT = SCRIPT_DIR / "setup_chrome.sh"
-CDP_PORT = int(os.environ.get("CDP_PORT", "9333"))
+CDP_PORT = int(os.environ.get("CDP_PORT", "9340"))   # bt derives this per project
 SCREENSHOT_DIR = Path(os.environ.get("BT_SCREENSHOT_DIR", SKILL_DIR / "tmp_screenshots"))
 
 DEFAULT_WIDTH = 1280
@@ -52,16 +52,15 @@ BREAKPOINTS = {
 
 
 def _ensure_chrome_running(cdp_port: int = CDP_PORT) -> bool:
-    """Check if Chrome is running on CDP port; auto-launch if not."""
-    try:
-        urllib.request.urlopen(f"http://localhost:{cdp_port}/json/version", timeout=2)
-        return True
-    except Exception:
-        pass
-    print(f"Chrome not running on port {cdp_port}, launching...", file=sys.stderr)
+    """Start our Chrome if needed, via setup_chrome.sh --ensure.
+
+    Deliberately NOT a bare "does the port answer?" probe: that would attach to
+    whatever browser holds the port — another project's Chrome, most likely — and
+    report success. The setup script refuses a port not running our profile.
+    """
     try:
         result = subprocess.run(
-            ["bash", str(SETUP_SCRIPT)],
+            ["bash", str(SETUP_SCRIPT), "--ensure"],
             capture_output=True, text=True, timeout=45,
             env={**os.environ, "CDP_PORT": str(cdp_port)},
         )
@@ -69,14 +68,9 @@ def _ensure_chrome_running(cdp_port: int = CDP_PORT) -> bool:
         print("Chrome launch timed out after 45s", file=sys.stderr)
         return False
     if result.returncode != 0:
-        print(f"Failed to launch Chrome: {result.stderr}", file=sys.stderr)
+        print((result.stderr or result.stdout).strip(), file=sys.stderr)
         return False
-    try:
-        urllib.request.urlopen(f"http://localhost:{cdp_port}/json/version", timeout=2)
-        return True
-    except Exception:
-        print("Chrome launched but CDP not responding", file=sys.stderr)
-        return False
+    return True
 
 
 # ─── Browser Context Manager ────────────────────────────────────────────
@@ -88,16 +82,21 @@ class Browser:
         async with Browser() as b:
             page = await b.get_page("https://example.com")
             info = await b.inspect_page(page)
+
+    Tabs this Browser opened are closed when the block exits. Pass
+    keep_pages=True to leave them for a later round (state, logins-in-progress).
     """
 
-    def __init__(self, cdp_port: int = CDP_PORT):
+    def __init__(self, cdp_port: int = CDP_PORT, keep_pages: bool = False):
         self.cdp_port = cdp_port
+        self.keep_pages = keep_pages
         self._pw = None
         self._pw_instance = None
         self._browser: PwBrowser | None = None
         self._context: BrowserContext | None = None
         self._created_context = False
         self._watch: OrderedDict[Page, dict] = OrderedDict()
+        self._opened: list[Page] = []   # tabs we created — ours to close
 
     async def __aenter__(self):
         if not _ensure_chrome_running(self.cdp_port):
@@ -105,8 +104,10 @@ class Browser:
 
         self._pw = async_playwright()
         self._pw_instance = await self._pw.__aenter__()
+        # 127.0.0.1, not localhost: setup_chrome.sh verified ownership of the IPv4
+        # listener, and Playwright would resolve localhost to ::1 first.
         self._browser = await self._pw_instance.chromium.connect_over_cdp(
-            f"http://localhost:{self.cdp_port}"
+            f"http://127.0.0.1:{self.cdp_port}"
         )
 
         # CRITICAL: Reuse existing default context to preserve login cookies
@@ -120,11 +121,34 @@ class Browser:
         return self
 
     async def __aexit__(self, *args):
-        # Do NOT close pages — tabs persist for user visibility
-        if self._created_context and self._context:
-            await self._context.close()
-        if self._pw:
-            await self._pw.__aexit__(*args)
+        # Close what we opened. Leaving tabs "for user visibility" is what made
+        # them pile up — there is no window to see them in anyway (headless).
+        # Cleanup must never replace the body's exception or skip the teardown.
+        try:
+            if not self.keep_pages:
+                for page in list(self._opened):
+                    try:
+                        await self.release_page(page)
+                    except Exception as e:
+                        print(f"warning: could not release tab: {e}", file=sys.stderr)
+            if self._created_context and self._context:
+                await self._context.close()
+        finally:
+            if self._pw:
+                await self._pw.__aexit__(*args)
+
+    async def release_page(self, page: Page) -> None:
+        """Close a tab — or blank it when it is the last one, since closing the
+        final tab quits Chrome and the next call would pay the launch again."""
+        if page in self._opened:
+            self._opened.remove(page)
+        if page.is_closed():
+            return
+        if len(self._context.pages) > 1:
+            await page.close()
+        else:
+            self._reset_watch(page)
+            await page.goto("about:blank")
 
     @property
     def context(self) -> BrowserContext:
@@ -164,6 +188,8 @@ class Browser:
                 # Drop the watch entry too, or long --python sessions accumulate
                 # buffers and listener closures for tabs that no longer exist.
                 self._watch.pop(page, None)
+                if page in self._opened:
+                    self._opened.remove(page)
                 closed += 1
         return closed
 
@@ -221,6 +247,7 @@ class Browser:
         page.on("response", on_response)
         page.on("requestfailed", on_requestfailed)
         page.on("close", lambda _p: self._watch.pop(page, None))
+        page.on("popup", lambda p: self._opened.append(p))   # a popup from our tab is ours to close
         self._watch[page] = buf
         return buf
 
@@ -234,32 +261,31 @@ class Browser:
             buf["dropped"] = 0
 
     async def get_page(self, url: str, wait_until: str = "domcontentloaded",
-                       timeout: int = 30000, reload: bool = False) -> Page:
+                       timeout: int = 30000, reload: bool = False,
+                       fresh: bool = False) -> Page:
         """Find existing tab matching URL or navigate to it.
 
         Reuses an existing tab if the URL matches, otherwise creates a new tab.
         Pass reload=True to re-fetch a reused tab — otherwise "inspect, fix the
-        site, inspect again" silently re-reads the pre-fix DOM. One-shot CLI calls
-        reload; multi-step flows keep the tab as-is so page state survives.
+        site, inspect again" silently re-reads the pre-fix DOM. fresh=True always
+        opens a new tab: one-shot CLI calls use it so concurrent calls (an agent
+        checking three pages in one message) never fight over one tab.
+        Multi-step flows keep the tab as-is so page state survives.
         """
-        # Try to find existing tab with this exact URL
-        for page in self._context.pages:
-            if page.url == url or page.url.rstrip("/") == url.rstrip("/"):
-                self._watch_page(page)
-                if reload:
-                    self._reset_watch(page)
-                    await page.reload(wait_until=wait_until, timeout=timeout)
-                    await page.wait_for_timeout(500)
-                return page
+        if not fresh:
+            for page in self._context.pages:
+                if page.url == url or page.url.rstrip("/") == url.rstrip("/"):
+                    self._watch_page(page)
+                    if reload:
+                        self._reset_watch(page)
+                        await page.reload(wait_until=wait_until, timeout=timeout)
+                        await page.wait_for_timeout(500)
+                    return page
 
-        # No matching tab — find a blank tab or create new
-        page = None
-        for p in self._context.pages:
-            if p.url in BLANK_URLS:
-                page = p
-                break
-        if not page:
-            page = await self._context.new_page()
+        # Always a new tab — the blank one is Chrome's keep-alive and is never
+        # claimed, so parallel callers cannot navigate it out from under each other.
+        page = await self._context.new_page()
+        self._opened.append(page)
 
         self._watch_page(page)
         self._reset_watch(page)
@@ -606,6 +632,13 @@ class Browser:
         )
         results = {}
 
+        try:
+            await self._measure_breakpoints(page, breakpoints, results)
+        finally:
+            await page.set_viewport_size(original_size)   # even if a breakpoint failed
+        return results
+
+    async def _measure_breakpoints(self, page: Page, breakpoints: dict, results: dict) -> None:
         for name, bp in breakpoints.items():
             await page.set_viewport_size({"width": bp["width"], "height": bp["height"]})
             await page.wait_for_timeout(500)
@@ -663,9 +696,6 @@ class Browser:
 
             results[name] = {"breakpoint": bp, "inspection": info}
 
-        await page.set_viewport_size(original_size)
-        return results
-
     # ── Interaction helpers ──────────────────────────────────────────
 
     async def click(self, page: Page, selector: str, timeout: int = 5000):
@@ -700,13 +730,19 @@ class Browser:
 
         Read-only on both — just fetches and inspects, no modifications.
         """
-        page_a = await self.get_page(url_a, reload=True)
-        await self.wait_for_network_idle(page_a)
-        info_a = await self.inspect_page(page_a)
+        page_a = await self.get_page(url_a, fresh=True)
+        try:
+            await self.wait_for_network_idle(page_a)
+            info_a = await self.inspect_page(page_a)
+        finally:
+            await self.release_page(page_a)
 
-        page_b = await self.get_page(url_b, reload=True)
-        await self.wait_for_network_idle(page_b)
-        info_b = await self.inspect_page(page_b)
+        page_b = await self.get_page(url_b, fresh=True)
+        try:
+            await self.wait_for_network_idle(page_b)
+            info_b = await self.inspect_page(page_b)
+        finally:
+            await self.release_page(page_b)
 
         comparison = {
             "page_a": {

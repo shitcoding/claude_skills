@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-browse.py — Quick page inspector via headed Chrome + CDP.
+browse.py — Quick page inspector via the skill's Chrome (headless) + CDP.
 
 Invoke through the `bt` wrapper (it bootstraps the venv):
     bt URL                          # Inspect page
@@ -9,6 +9,7 @@ Invoke through the `bt` wrapper (it bootstraps the venv):
     bt URL --seo                    # SEO checks
     bt URL --audit                  # Full audit (all checks)
     bt URL --screenshot             # Take screenshot
+    bt URL --snapshot               # Accessibility tree: every control as role + name
     bt URL --find "search button"   # Find elements
     bt URL --eval "document.title"  # Evaluate JS
     bt --compare URL_A URL_B        # Compare two pages
@@ -67,7 +68,7 @@ def emit_digest(text: str, out_path: Path) -> None:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Quick page inspector via headed Chrome + CDP",
+        description="Quick page inspector via headless Chrome + CDP",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   bt https://example.com                     # Inspect page
@@ -91,6 +92,9 @@ async def main():
                         help="Take full-page screenshot")
     parser.add_argument("--find", metavar="DESC",
                         help="Find elements matching description")
+    parser.add_argument("--snapshot", action="store_true",
+                        help="Accessibility-tree snapshot: every control as role + name "
+                             "(compact; act on them with role= selectors)")
     parser.add_argument("--eval", dest="js_eval", metavar="JS",
                         help="Evaluate JavaScript expression")
     parser.add_argument("--selector", metavar="CSS",
@@ -163,85 +167,99 @@ async def run(args):
             print(format_comparison(result))
             return
 
-        # reload=True: each CLI call is a fresh question about the page's CURRENT state.
-        page = await b.get_page(args.url, reload=True)
-        await b.wait_for_network_idle(page)
+        # fresh=True: each CLI call is a fresh question about the page's CURRENT
+        # state, in its own tab — parallel calls never share one.
+        page = await b.get_page(args.url, fresh=True)
+        try:
+            await b.wait_for_network_idle(page)
+            await _inspect(b, page, args)
+        finally:
+            await b.release_page(page)
 
-        if args.find:
-            elements = await b.find_elements(page, args.find)
-            print(f"=== Found {len(elements)} matches for \"{args.find}\" ===")
-            for el in elements[:15]:
-                print(f"  [{el['score']}] <{el['tag']}> \"{el['text'][:60]}\" selector=\"{el['selector']}\"")
-            return
 
-        if args.js_eval:
-            result = await b.evaluate(page, args.js_eval)
-            if isinstance(result, (dict, list)):
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-            else:
-                print(result)
-            return
+async def _inspect(b, page, args):
+    if args.snapshot:
+        # What a screen reader sees: roles and accessible names, nested. The
+        # interaction view of the page — cheap in tokens, and every line is a
+        # ready-made target: click(page, 'role=button[name="Save"]').
+        print(await page.locator("body").aria_snapshot())
+        return
 
-        if args.screenshot or args.full_screenshot:
-            path = await b.screenshot_page(
-                page, full_page=args.full_screenshot,
-                fmt="png" if args.png else "jpeg", quality=args.quality)
-            print(f"Screenshot saved: {path}")
-            return
+    if args.find:
+        elements = await b.find_elements(page, args.find)
+        print(f"=== Found {len(elements)} matches for \"{args.find}\" ===")
+        for el in elements[:15]:
+            print(f"  [{el['score']}] <{el['tag']}> \"{el['text'][:60]}\" selector=\"{el['selector']}\"")
+        return
 
-        if args.lighthouse:
-            print(format_lighthouse(run_lighthouse(
-                page.url, categories=args.lh_categories, cdp_port=CDP_PORT)))
-            return
+    if args.js_eval:
+        result = await b.evaluate(page, args.js_eval)
+        if isinstance(result, (dict, list)):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(result)
+        return
 
-        if args.audit:
-            info = await b.inspect_page(page)
-            print(format_inspection(info))
+    if args.screenshot or args.full_screenshot:
+        path = await b.screenshot_page(
+            page, full_page=args.full_screenshot,
+            fmt="png" if args.png else "jpeg", quality=args.quality)
+        print(f"Screenshot saved: {path}")
+        return
 
-            print("\n" + "=" * 60 + "\n")
-            results = await b.check_responsive(page)
-            print(format_responsive(results))
+    if args.lighthouse:
+        print(format_lighthouse(run_lighthouse(
+            page.url, categories=args.lh_categories, cdp_port=CDP_PORT)))
+        return
 
-            print("=" * 60 + "\n")
-            print(Browser.format_accessibility(await b.check_accessibility(page)))
-
-            print(f"\n{'=' * 60}\n")
-            seo = await b.check_seo(page)
-            print("=== SEO Check ===")
-            for issue in seo["issues"]:
-                print(f"  [{issue['type']}] {issue['msg']}")
-            print(f"  Meta: title=\"{seo['meta'].get('title', '')}\"")
-            print(f"  Meta: description=\"{seo['meta'].get('description', '')[:80]}\"")
-            return
-
-        if args.selector:
-            styles = await b.get_computed_styles(page, args.selector)
-            print(f"=== Computed Styles for \"{args.selector}\" ===")
-            for k, v in styles.items():
-                if k != "_rect":
-                    print(f"  {k}: {v}")
-            return
-
-        if args.responsive:
-            results = await b.check_responsive(page)
-            print(format_responsive(results))
-            return
-
-        if args.accessibility:
-            print(Browser.format_accessibility(await b.check_accessibility(page)))
-            return
-
-        if args.seo:
-            seo = await b.check_seo(page)
-            print("=== SEO Check ===")
-            print(f"Meta: {json.dumps(seo['meta'], ensure_ascii=False, indent=2)}")
-            for issue in seo["issues"]:
-                print(f"  [{issue['type']}] {issue['msg']}")
-            return
-
-        # Default: inspect
+    if args.audit:
         info = await b.inspect_page(page)
         print(format_inspection(info))
+
+        print("\n" + "=" * 60 + "\n")
+        results = await b.check_responsive(page)
+        print(format_responsive(results))
+
+        print("=" * 60 + "\n")
+        print(Browser.format_accessibility(await b.check_accessibility(page)))
+
+        print(f"\n{'=' * 60}\n")
+        seo = await b.check_seo(page)
+        print("=== SEO Check ===")
+        for issue in seo["issues"]:
+            print(f"  [{issue['type']}] {issue['msg']}")
+        print(f"  Meta: title=\"{seo['meta'].get('title', '')}\"")
+        print(f"  Meta: description=\"{seo['meta'].get('description', '')[:80]}\"")
+        return
+
+    if args.selector:
+        styles = await b.get_computed_styles(page, args.selector)
+        print(f"=== Computed Styles for \"{args.selector}\" ===")
+        for k, v in styles.items():
+            if k != "_rect":
+                print(f"  {k}: {v}")
+        return
+
+    if args.responsive:
+        results = await b.check_responsive(page)
+        print(format_responsive(results))
+        return
+
+    if args.accessibility:
+        print(Browser.format_accessibility(await b.check_accessibility(page)))
+        return
+
+    if args.seo:
+        seo = await b.check_seo(page)
+        print("=== SEO Check ===")
+        print(f"Meta: {json.dumps(seo['meta'], ensure_ascii=False, indent=2)}")
+        for issue in seo["issues"]:
+            print(f"  [{issue['type']}] {issue['msg']}")
+        return
+
+    # Default: inspect
+    info = await b.inspect_page(page)
+    print(format_inspection(info))
 
 
 if __name__ == "__main__":

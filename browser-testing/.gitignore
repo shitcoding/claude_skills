@@ -3,6 +3,7 @@ config/chrome-profile/
 
 # Python virtual environment
 .venv/
+.venv.lock/
 
 # Python bytecode
 __pycache__/
