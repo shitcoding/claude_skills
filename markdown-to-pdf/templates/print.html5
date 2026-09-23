@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html$if(lang)$ lang="$lang$"$endif$>
+<head>
+  <meta charset="utf-8">
+  <title>$if(title)$$title$$else$$pagetitle$$endif$</title>
+
+$-- The theme CSS arrives via --include-in-header, which pandoc inserts VERBATIM.
+$-- Do NOT pass it as -M metadata: pandoc HTML-escapes metadata and collapses its
+$-- newlines, so every `a > b` child selector in the theme silently becomes
+$-- `a &gt; b` and stops matching.
+$-- Pandoc's own stylesheet ($styles.html()$) is deliberately absent: it sets
+$-- body{max-width:36em}, which squeezes the page to ~55% width. Overriding
+$-- #write does not help -- #write is already max-width:100%; body is the constraint.
+$for(header-includes)$
+$header-includes$
+$endfor$
+
+  <style>
+    /* -apple-system does not resolve in headless Chrome and silently falls back
+       to a serif with no Cyrillic coverage guarantee: pin an explicit stack. */
+    :root { --font-family: $sans-font$; }
+    body, #write, table, th, td, h1, h2, h3, h4, h5, h6, p, li, blockquote,
+    dt, dd, figcaption { font-family: $sans-font$; }
+    code, pre, .md-fences, kbd, samp { font-family: $mono-font$; }
+
+    /* Guard against a stray body width constraint (see the note above). */
+    body { max-width: none; margin: 0; padding: 0; }
+$if(page-breaks)$
+
+    /* A new page at each top-level heading. */
+    @media print {
+      #write > h1 { page-break-before: always; }
+      #write > h1:first-of-type { page-break-before: avoid; }
+    }
+$endif$
+  </style>
+
+$-- No @page rule here on purpose. The theme's own @media print block sets page
+$-- size and margins; an @page in this wrapper comes later in the cascade and
+$-- would override the theme author's tuning.
+</head>
+<body>
+<div id="write">
+$if(title)$
+<h1 class="title">$title$</h1>
+$endif$
+$body$
+</div>
+</body>
+</html>

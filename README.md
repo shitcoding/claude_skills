@@ -127,6 +127,31 @@ Inspect and test any website through a headed Chrome instance driven over CDP (C
 
 **Configuration (all optional):** `CDP_PORT` (default 9333), `BT_CHROME_PROFILE`, `CHROME_BIN`, `BT_SCREENSHOT_DIR`.
 
+### markdown-to-pdf
+
+Export Markdown files to PDF with selectable visual themes: pandoc renders the Markdown to HTML
+with a CSS theme inlined, then headless Chrome prints it.
+
+**Features:**
+- Themes are plain CSS scoped to `#write`; one ships with the skill, so there is nothing else to install
+- Correct output for tables, code blocks and non-Latin scripts (Cyrillic, Greek, CJK) — no LaTeX
+- Page break before each top-level heading (`--no-page-breaks` to disable)
+- Batch export, and the paper size comes from the theme's own `@page`
+- Verifies its own output by default — a PDF that builds is not a PDF that is correct
+
+**Requirements:**
+- [pandoc](https://pandoc.org) — `brew install pandoc` / `apt install pandoc`
+- Google Chrome, Chromium, Brave or Edge (auto-detected; override with `MD2PDF_BROWSER`)
+- No LaTeX, no venv, no Python packages — stdlib only
+
+**Installation:**
+```bash
+ln -s /path/to/claude_skills/markdown-to-pdf ~/.claude/skills/markdown-to-pdf
+~/.claude/skills/markdown-to-pdf/scripts/md2pdf report.md
+```
+
+**Configuration (all optional):** `MD2PDF_BROWSER`, `MD2PDF_BROWSER_ARGS` (e.g. `--no-sandbox` in a container).
+
 ## Setup
 
 Skills must be symlinked to `~/.claude/skills/` directory.

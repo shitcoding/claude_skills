@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Export Markdown to PDF through a real browser.
+
+pandoc renders the Markdown to standalone HTML with a CSS theme inlined and the
+content wrapped in <div id="write">, then headless Chrome prints it with
+--print-to-pdf. No LaTeX, so Cyrillic and any other script just work.
+
+The failure mode of this whole domain is silent success -- a PDF that builds with
+exit code 0 and is wrong -- so the output is checked by default.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+
+SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", "DejaVu Sans", sans-serif'
+MONO = 'Menlo, Monaco, "DejaVu Sans Mono", "Liberation Mono", monospace'
+
+# A PDF smaller than this is a failure however happily the tool exited.
+MIN_PDF_BYTES = 1000
+
+# How long to let the browser render before giving up on it.
+PRINT_TIMEOUT_S = 120
+
+MAC_BROWSERS = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+]
+PATH_BROWSERS = [
+    "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+    "brave-browser", "microsoft-edge",
+]
+
+# Paper sizes in mm, for checking the PDF against what the theme's @page asked for.
+PAPER_MM = {
+    "a3": (297.0, 420.0), "a4": (210.0, 297.0), "a5": (148.0, 210.0),
+    "letter": (215.9, 279.4), "legal": (215.9, 355.6), "tabloid": (279.4, 431.8),
+}
+
+
+def die(msg):
+    sys.exit("md2pdf: error: " + msg)
+
+
+def warn(msg):
+    print("md2pdf: warning: " + msg, file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- tools
+
+def find_browser(override=None):
+    """Resolve a Chromium-family binary. Never hardcode one path: the same skill
+    runs on macOS app bundles and on Linux PATH names."""
+    if override:
+        p = Path(override).expanduser()
+        if not (p.is_file() and os.access(p, os.X_OK)):
+            die("--browser %s is not an executable file" % override)
+        return str(p)
+    env = os.environ.get("MD2PDF_BROWSER")
+    if env:
+        return find_browser(env)
+    for p in MAC_BROWSERS:
+        if os.access(p, os.X_OK):
+            return p
+    for name in PATH_BROWSERS:
+        found = shutil.which(name)
+        if found:
+            return found
+    die("no Chromium-family browser found. Install Google Chrome, Chromium, Brave "
+        "or Edge, or set MD2PDF_BROWSER=/path/to/browser")
+
+
+def find_pandoc():
+    p = shutil.which("pandoc")
+    if not p:
+        die("pandoc not found. Install it: brew install pandoc / apt install pandoc")
+    return p
+
+
+def find_theme(name):
+    """A theme is a bundled name or a path to any stylesheet."""
+    cand = Path(name).expanduser()
+    if cand.suffix == ".css" or "/" in name:
+        if not cand.is_file():
+            die("theme file not found: %s" % cand)
+        return cand
+    for d in [SKILL_DIR / "themes"]:
+        f = d / (name + ".css")
+        if f.is_file():
+            return f
+    die("theme %r not found. Try --list-themes." % name)
+
+
+def list_themes():
+    d = SKILL_DIR / "themes"
+    names = sorted(f.stem for f in d.glob("*.css")) if d.is_dir() else []
+    print("bundled  (%s)" % d)
+    for n in names:
+        print("  %s" % n)
+    print("\nAny other stylesheet works too: --theme /path/to/your.css")
+
+
+# ----------------------------------------------------------------------- markdown
+
+FRONT_MATTER = re.compile(r"\A---\r?\n.*?\r?\n(?:---|\.\.\.)[ \t]*\r?\n", re.S)
+ATX_H1 = re.compile(r"\A#[ \t]+(.+?)[ \t]*#*[ \t]*\Z")
+
+
+def split_title(text):
+    """Return (title, body).
+
+    The title is the document's leading level-1 heading, and it is removed from
+    the body so it does not render twice (the template emits it separately).
+    Anything else -- a document opening with prose, with YAML front matter that
+    carries its own title, or with a setext heading -- yields no title here and
+    is left untouched for pandoc to deal with.
+    """
+    m = FRONT_MATTER.match(text)
+    head, rest = (text[:m.end()], text[m.end():]) if m else ("", text)
+
+    lines = rest.split("\n")
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        h1 = ATX_H1.match(line.strip())
+        if not h1:
+            return None, text          # first real line is not an H1: leave it alone
+        del lines[i]
+        return h1.group(1).strip(), head + "\n".join(lines)
+    return None, text                  # empty document
+
+
+# ---------------------------------------------------------------------- rendering
+
+def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, lang):
+    header = out_html.with_suffix(".header.html")
+    header.write_text("<style>\n%s\n</style>\n" % theme_css.read_text(), encoding="utf-8")
+    body_md = out_html.with_suffix(".body.md")
+    body_md.write_text(body, encoding="utf-8")
+
+    cmd = [
+        pandoc, str(body_md), "-f", "markdown", "-t", "html5", "--standalone",
+        "--template", str(SKILL_DIR / "templates/print.html5"),
+        # verbatim, unlike -M metadata, which pandoc HTML-escapes and unwraps
+        "--include-in-header", str(header),
+        "-V", "sans-font=" + SANS,
+        "-V", "mono-font=" + MONO,
+        "-M", "pagetitle=" + (title or Path(src_md).stem),
+        "-o", str(out_html),
+    ]
+    if title:
+        cmd += ["-M", "title=" + title]
+    if page_breaks:
+        cmd += ["-V", "page-breaks=1"]
+    if lang:
+        cmd += ["-M", "lang=" + lang]
+
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        die("pandoc failed:\n" + r.stderr.strip())
+    if r.stderr.strip():
+        warn("pandoc: " + r.stderr.strip())
+    header.unlink()
+    body_md.unlink()
+
+
+def check_html(html_path):
+    """Catch the two structural regressions that would otherwise ship a wrong-looking
+    PDF quietly. Both are properties of the template, which is a fixed asset of this
+    skill -- so this is what stands in for measuring the rendered page."""
+    html = html_path.read_text(encoding="utf-8", errors="replace")
+    problems = []
+    if '<div id="write">' not in html:
+        problems.append("the #write wrapper is missing -- every theme rule is "
+                        "scoped to it and the page will render nearly unstyled")
+    if re.search(r"max-width:\s*36em", html):
+        problems.append("pandoc's default stylesheet leaked in (body{max-width:36em}) "
+                        "-- content will occupy ~55% of the page width")
+    head = html.split("</head>", 1)[0]
+    if "&gt;" in head:
+        problems.append("the inlined CSS is HTML-escaped -- child selectors (a > b) "
+                        "will not match; the theme must go through --include-in-header")
+    return problems
+
+
+def pdf_complete(pdf_path):
+    """A PDF Chrome has finished writing ends with its %%EOF marker. Checking for it
+    is what makes it safe to stop the browser as soon as the file appears."""
+    try:
+        if pdf_path.stat().st_size < MIN_PDF_BYTES:
+            return False
+        with open(pdf_path, "rb") as f:
+            f.seek(-2048, os.SEEK_END)
+            return b"%%EOF" in f.read()
+    except OSError:
+        return False
+
+
+def print_pdf(browser, html_path, pdf_path):
+    pdf_path = pdf_path.resolve()          # Chrome resolves a relative path against its own cwd
+    if pdf_path.exists():
+        pdf_path.unlink()
+
+    profile = tempfile.mkdtemp(prefix="md2pdf-chrome-")
+    cmd = [
+        browser, "--headless", "--no-pdf-header-footer",
+        # a throwaway profile: never open the user's real one, which a running
+        # Chrome owns and which this would be writing to concurrently
+        "--user-data-dir=" + profile,
+        "--no-first-run", "--disable-background-networking",
+        "--print-to-pdf=" + str(pdf_path),
+        html_path.resolve().as_uri(),
+    ]
+    cmd[1:1] = os.environ.get("MD2PDF_BROWSER_ARGS", "").split()
+
+    # start_new_session so the whole browser process group can be stopped together
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            start_new_session=True, text=True)
+    deadline = time.monotonic() + PRINT_TIMEOUT_S
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None or pdf_complete(pdf_path):
+                break
+            time.sleep(0.25)
+        if proc.poll() is None:
+            # Chrome 153 headless does not exit when given a non-default
+            # --user-data-dir -- verified, and --dump-dom hangs the same way, so it
+            # is not about printing and no flag cures it. The PDF is already
+            # written and checked complete, so stopping it here loses nothing.
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+    # Chrome writes harmless noise to stderr on macOS and exits 0 either way,
+    # so its output is never the evidence -- the PDF is.
+    if not pdf_path.is_file():
+        stderr = (proc.stderr.read() if proc.stderr else "").strip()
+        die("browser produced no PDF.\n" + (stderr or "(no browser output)"))
+    if not pdf_complete(pdf_path):
+        die("browser did not finish writing %s (no %%%%EOF marker after %ds)"
+            % (pdf_path, PRINT_TIMEOUT_S))
+
+
+# ------------------------------------------------------------------- verification
+
+MEDIABOX = re.compile(rb"/MediaBox\s*\[([^\]]+)\]")
+
+
+def pdf_page_sizes(pdf_path):
+    """Page sizes in mm, read straight out of the PDF bytes -- no dependencies."""
+    data = pdf_path.read_bytes()
+    sizes = set()
+    for raw in MEDIABOX.findall(data):
+        try:
+            v = [float(x) for x in raw.split()]
+        except ValueError:
+            continue
+        if len(v) == 4:
+            sizes.add((round(abs(v[2] - v[0]) / 72 * 25.4, 1),
+                       round(abs(v[3] - v[1]) / 72 * 25.4, 1)))
+    return sizes
+
+
+PAGE_SIZE_DECL = re.compile(r"@page[^{]*\{[^}]*?\bsize\s*:\s*([^;}]+)", re.S | re.I)
+
+
+def theme_expected_size(theme_css):
+    """What paper the theme's own @page asks for. Chrome honours it; with no @page
+    at all Chrome silently defaults to US Letter, which is rarely what anyone wants."""
+    m = PAGE_SIZE_DECL.search(theme_css.read_text(encoding="utf-8", errors="replace"))
+    if not m:
+        return None, None
+    decl = m.group(1).strip().lower()
+    words = decl.replace(",", " ").split()
+    for w in words:
+        if w in PAPER_MM:
+            wmm, hmm = PAPER_MM[w]
+            if "landscape" in words:
+                wmm, hmm = hmm, wmm
+            return (wmm, hmm), decl
+    dims = re.findall(r"([\d.]+)\s*mm", decl)
+    if len(dims) == 2:
+        return (float(dims[0]), float(dims[1])), decl
+    return None, decl
+
+
+def verify(pdf_path, theme_css):
+    """Report problems; an empty list means the checks passed."""
+    problems = []
+    size = pdf_path.stat().st_size
+    if size < MIN_PDF_BYTES:
+        problems.append("PDF is only %d bytes -- almost certainly empty" % size)
+
+    sizes = pdf_page_sizes(pdf_path)
+    if not sizes:
+        problems.append("no /MediaBox in the PDF -- cannot confirm the page size")
+        return problems, size, sizes
+
+    expected, decl = theme_expected_size(theme_css)
+    if expected:
+        ok = any(abs(w - expected[0]) <= 1 and abs(h - expected[1]) <= 1 for w, h in sizes)
+        if not ok:
+            problems.append(
+                "page size is %s but the theme's @page asks for %s (%.0fx%.0fmm)"
+                % (", ".join("%.0fx%.0fmm" % s for s in sizes), decl, *expected))
+    elif any(abs(w - 215.9) <= 1 and abs(h - 279.4) <= 1 for w, h in sizes):
+        warn("page size is US Letter, Chrome's default -- the theme declares no "
+             "@page size, so nothing asked for A4")
+    return problems, size, sizes
+
+
+# ------------------------------------------------------------------------- driver
+
+def export(src, out, args, pandoc, browser, theme):
+    text = src.read_text(encoding="utf-8")
+    title, body = split_title(text)
+    if args.title:
+        # an explicit title still replaces a leading H1 rather than doubling it
+        title = args.title
+
+    workdir = out.parent if args.keep_html else Path(tempfile.mkdtemp(prefix="md2pdf-"))
+    html = workdir / (out.stem + ".html")
+    try:
+        build_html(pandoc, src, body, title, theme, not args.no_page_breaks, html, args.lang)
+        problems = check_html(html)
+        if problems:
+            die("generated HTML is wrong:\n  - " + "\n  - ".join(problems))
+        print_pdf(browser, html, out)
+    finally:
+        if not args.keep_html:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    line = "%s -> %s" % (src.name, out)
+    if args.no_verify:
+        print(line + "  (unverified)")
+        return 0
+    problems, size, sizes = verify(out, theme)
+    if problems:
+        print("md2pdf: %s FAILED verification:" % out, file=sys.stderr)
+        for p in problems:
+            print("  - " + p, file=sys.stderr)
+        return 1
+    print("%s  [%s, %.0f KB%s]" % (
+        line, ", ".join("%.0fx%.0fmm" % s for s in sorted(sizes)), size / 1024,
+        ", html kept" if args.keep_html else ""))
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="md2pdf",
+        description="Export Markdown to PDF via pandoc + a CSS theme + headless Chrome.")
+    ap.add_argument("inputs", nargs="*", type=Path, metavar="FILE.md")
+    ap.add_argument("-o", "--output", type=Path,
+                    help="output PDF (single input only; default: alongside the input)")
+    ap.add_argument("-t", "--theme", default="print",
+                    help="bundled theme name or path to a .css file "
+                         "(default: print)")
+    ap.add_argument("--list-themes", action="store_true", help="list resolvable themes and exit")
+    ap.add_argument("--title", help="override the leading-H1 title heuristic")
+    ap.add_argument("--lang", help="document language, e.g. ru (sets <html lang>)")
+    ap.add_argument("--no-page-breaks", action="store_true",
+                    help="do not start a new page at each top-level heading")
+    ap.add_argument("--no-verify", action="store_true", help="skip the output checks")
+    ap.add_argument("--keep-html", action="store_true",
+                    help="keep the intermediate HTML next to the PDF")
+    ap.add_argument("--browser", help="path to a Chromium-family browser")
+    args = ap.parse_args()
+
+    if args.list_themes:
+        list_themes()
+        return 0
+    if not args.inputs:
+        ap.error("no input files")
+    if args.output and len(args.inputs) > 1:
+        ap.error("--output takes a single input file")
+
+    pandoc = find_pandoc()
+    browser = find_browser(args.browser)
+    theme = find_theme(args.theme)
+
+    rc = 0
+    for src in args.inputs:
+        if not src.is_file():
+            die("no such file: %s" % src)
+        out = args.output if args.output else src.with_suffix(".pdf")
+        rc |= export(src, out, args, pandoc, browser, theme)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
