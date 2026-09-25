@@ -27,6 +27,7 @@ scripts/md2pdf --lang ru -o out.pdf report.md
 | `--title TEXT` | override the leading-H1 title |
 | `--lang CODE` | sets `<html lang>` — worth setting for correct hyphenation |
 | `--no-page-breaks` | don't start a new page at each top-level heading |
+| `--keep-lines N` | carry a heading to the next page unless about N lines of its section fit beneath it (default 3; `0` disables) |
 | `--keep-html` | keep the intermediate HTML next to the PDF (debugging) |
 | `--no-verify` | skip the output checks |
 | `--browser PATH` | override browser detection (also `MD2PDF_BROWSER`) |
@@ -60,6 +61,28 @@ verifier warns when that happens.
 The document's leading `#` heading becomes the title and is **removed from the body**, so it does not
 render twice. YAML front matter is stepped over when looking for it. A document opening with prose, or
 with a setext heading, simply gets no extracted title and is left untouched — pass `--title` to force one.
+
+## Headings are not left stranded
+
+A heading at the foot of a page with its content on the next one is the commonest ugliness in an
+exported document. Two different things cause it, and both are handled:
+
+- **The page is nearly full.** Each heading reserves `N + 1` root line-heights of space inside its own
+  box (given back with a negative margin, so nothing moves visually) and forbids splitting that box.
+  A heading without room for roughly `N` lines underneath is carried to the next page instead.
+- **The next block cannot split.** A table or figure taller than the space left jumps to the next page
+  on its own, leaving the heading behind on a half-empty one. Themes bind a heading to its *first*
+  following sibling; this binds the second as well, so an introductory sentence cannot separate a
+  heading from the table it introduces.
+
+A heading immediately followed by **another heading** reserves nothing — only the last of a run needs
+room, because the others already have their content right beneath them. This matters: without it a
+stack like `h2 h3 h4 h5 h6` demands five reserves at once, which together with the avoid-break chain
+cannot be satisfied, and the renderer resolves that by splitting the run across the page edge.
+
+`--keep-lines N` tunes the first case (default 3, `0` turns all of this off). The threshold is
+approximate — it is measured in root line-heights, so it follows the theme's font size, but a theme
+with roomier heading margins will land a line either side.
 
 ## Verification
 

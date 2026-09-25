@@ -33,6 +33,48 @@ $if(page-breaks)$
       #write > h1:first-of-type { page-break-before: avoid; }
     }
 $endif$
+$if(heading-reserve)$
+
+    /* Don't strand a heading at the foot of a page. The ::after reserves room for
+       the first lines of the section inside the heading's own box, and break-inside
+       forbids splitting that box -- so a heading with too little room beneath it is
+       carried to the next page. The negative margin gives the reserved space back,
+       so nothing moves visually. rlh = root line-height, so this is measured in
+       lines of body text whatever the theme's font size. */
+    @media print {
+      h1, h2, h3, h4, h5, h6 {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      h1::after, h2::after, h3::after, h4::after, h5::after, h6::after {
+        content: "";
+        display: block;
+        height: calc($heading-reserve$ * 1rlh);
+        margin-bottom: calc(-1 * $heading-reserve$ * 1rlh);
+      }
+
+      /* A heading directly followed by another heading must NOT reserve: only the
+         last of a run needs room for the text beneath it. Without this, a stack
+         like h3+h4+h5+h6 demands four reserves at once, which together with the
+         avoid-break chain cannot be satisfied -- and Chrome then resolves it by
+         slicing a heading's line box across the page edge. */
+      :is(h1, h2, h3, h4, h5, h6):has(+ :is(h1, h2, h3, h4, h5, h6))::after {
+        content: none;
+      }
+
+      /* The reserve only helps when the page is nearly full. The other way a
+         heading gets stranded is an unsplittable block -- a table or figure --
+         that follows an intro line and jumps to the next page on its own, leaving
+         the heading behind on a half-empty one. Themes bind the heading to its
+         first sibling; bind the second too, so the intro line cannot separate
+         them. */
+      h1 + * + *, h2 + * + *, h3 + * + *,
+      h4 + * + *, h5 + * + *, h6 + * + * {
+        break-before: avoid;
+        page-break-before: avoid;
+      }
+    }
+$endif$
   </style>
 
 $-- No @page rule here on purpose. The theme's own @media print block sets page

@@ -136,6 +136,7 @@ with a CSS theme inlined, then headless Chrome prints it.
 - Themes are plain CSS scoped to `#write`; one ships with the skill, so there is nothing else to install
 - Correct output for tables, code blocks and non-Latin scripts (Cyrillic, Greek, CJK) — no LaTeX
 - Page break before each top-level heading (`--no-page-breaks` to disable)
+- Headings are never stranded at the foot of a page, away from the text or table they introduce (`--keep-lines`)
 - Batch export, and the paper size comes from the theme's own `@page`
 - Verifies its own output by default — a PDF that builds is not a PDF that is correct
 

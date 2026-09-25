@@ -143,10 +143,13 @@ def split_title(text):
 
 # ---------------------------------------------------------------------- rendering
 
-def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, lang):
-    header = out_html.with_suffix(".header.html")
+def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, lang, keep_lines):
+    # Scratch inputs go to a temp dir -- only the HTML has to sit beside the source,
+    # and the user's directory should not collect debris if this fails.
+    scratch = Path(tempfile.mkdtemp(prefix="md2pdf-in-"))
+    header = scratch / "header.html"
     header.write_text("<style>\n%s\n</style>\n" % theme_css.read_text(), encoding="utf-8")
-    body_md = out_html.with_suffix(".body.md")
+    body_md = scratch / "body.md"
     body_md.write_text(body, encoding="utf-8")
 
     cmd = [
@@ -163,6 +166,12 @@ def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, la
         cmd += ["-M", "title=" + title]
     if page_breaks:
         cmd += ["-V", "page-breaks=1"]
+    if keep_lines > 0:
+        # +1: measured on the bundled theme, a reserve of N+1 line-heights is what
+        # actually keeps N lines with the heading, the extra one covering the
+        # heading's own bottom margin. Approximate by nature -- a theme with roomier
+        # heading margins will differ by a line.
+        cmd += ["-V", "heading-reserve=%d" % (keep_lines + 1)]
     if lang:
         cmd += ["-M", "lang=" + lang]
 
@@ -171,8 +180,7 @@ def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, la
         die("pandoc failed:\n" + r.stderr.strip())
     if r.stderr.strip():
         warn("pandoc: " + r.stderr.strip())
-    header.unlink()
-    body_md.unlink()
+    shutil.rmtree(scratch, ignore_errors=True)
 
 
 def check_html(html_path):
@@ -180,14 +188,16 @@ def check_html(html_path):
     PDF quietly. Both are properties of the template, which is a fixed asset of this
     skill -- so this is what stands in for measuring the rendered page."""
     html = html_path.read_text(encoding="utf-8", errors="replace")
+    # Only the <head> may be searched for stylesheet symptoms: the body is the user's
+    # own prose, and a document that merely writes about max-width:36em is not broken.
+    head = html.split("</head>", 1)[0]
     problems = []
     if '<div id="write">' not in html:
         problems.append("the #write wrapper is missing -- every theme rule is "
                         "scoped to it and the page will render nearly unstyled")
-    if re.search(r"max-width:\s*36em", html):
+    if re.search(r"max-width:\s*36em", head):
         problems.append("pandoc's default stylesheet leaked in (body{max-width:36em}) "
                         "-- content will occupy ~55% of the page width")
-    head = html.split("</head>", 1)[0]
     if "&gt;" in head:
         problems.append("the inlined CSS is HTML-escaped -- child selectors (a > b) "
                         "will not match; the theme must go through --include-in-header")
@@ -333,17 +343,33 @@ def export(src, out, args, pandoc, browser, theme):
         # an explicit title still replaces a leading H1 rather than doubling it
         title = args.title
 
-    workdir = out.parent if args.keep_html else Path(tempfile.mkdtemp(prefix="md2pdf-"))
-    html = workdir / (out.stem + ".html")
+    # The HTML must live where the Markdown does, or every relative image and link in
+    # the document resolves against the wrong directory and is silently dropped --
+    # Fall back to a temp dir if that directory is not writable,
+    # accepting broken relative assets over refusing to run.
+    src_dir = src.resolve().parent
+    tmpdir = None
+    if args.keep_html:
+        html = out.parent / (out.stem + ".html")
+    elif os.access(src_dir, os.W_OK):
+        html = src_dir / (out.stem + ".md2pdf-tmp.html")
+    else:
+        tmpdir = Path(tempfile.mkdtemp(prefix="md2pdf-"))
+        html = tmpdir / (out.stem + ".html")
+        warn("%s is not writable; relative images and links will not resolve" % src_dir)
     try:
-        build_html(pandoc, src, body, title, theme, not args.no_page_breaks, html, args.lang)
+        build_html(pandoc, src, body, title, theme, not args.no_page_breaks, html,
+                   args.lang, args.keep_lines)
         problems = check_html(html)
         if problems:
             die("generated HTML is wrong:\n  - " + "\n  - ".join(problems))
         print_pdf(browser, html, out)
     finally:
         if not args.keep_html:
-            shutil.rmtree(workdir, ignore_errors=True)
+            # delete only what we created -- never the directory, which is the user's
+            html.unlink(missing_ok=True)
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
     line = "%s -> %s" % (src.name, out)
     if args.no_verify:
@@ -376,6 +402,9 @@ def main():
     ap.add_argument("--lang", help="document language, e.g. ru (sets <html lang>)")
     ap.add_argument("--no-page-breaks", action="store_true",
                     help="do not start a new page at each top-level heading")
+    ap.add_argument("--keep-lines", type=int, default=3, metavar="N",
+                    help="carry a heading to the next page unless about N lines of its "
+                         "section fit beneath it (default 3; 0 disables)")
     ap.add_argument("--no-verify", action="store_true", help="skip the output checks")
     ap.add_argument("--keep-html", action="store_true",
                     help="keep the intermediate HTML next to the PDF")
@@ -390,6 +419,8 @@ def main():
     if args.output and len(args.inputs) > 1:
         ap.error("--output takes a single input file")
 
+    if args.keep_lines < 0:
+        ap.error("--keep-lines cannot be negative")
     pandoc = find_pandoc()
     browser = find_browser(args.browser)
     theme = find_theme(args.theme)
