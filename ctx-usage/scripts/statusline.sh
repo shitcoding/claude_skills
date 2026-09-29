@@ -14,7 +14,13 @@
 #   }
 #
 # Env: CLAUDE_CTX_DIR (payload directory, default ~/.claude/ctx)
-#      CTX_RENDER     (renderer command, default `bunx -y ccstatusline@latest`)
+#      CTX_RENDER     (renderer command, default: an installed `ccstatusline`, else
+#                      `bunx -y ccstatusline@latest`)
+#
+# Install the renderer once (`npm install -g ccstatusline`, update with `npm update -g
+# ccstatusline`). The bunx fallback re-resolves and re-downloads the package on every
+# render — ~0.6 s, a registry round-trip and a freshly written script for Gatekeeper to
+# scan, per refresh, per open session — versus ~0.2 s and no network when installed.
 #
 # NOTE: deliberately no `set -e` and no `set -o pipefail` — a failure in the tee must
 # never blank the user's status line. The exit status is the renderer's, as it would be
@@ -37,4 +43,9 @@ input=$(cat)
   fi
 } 2>/dev/null || true
 
-printf '%s' "$input" | ${CTX_RENDER:-bunx -y ccstatusline@latest}
+render=${CTX_RENDER:-}
+if [ -z "$render" ]; then
+  if command -v ccstatusline >/dev/null 2>&1; then render=ccstatusline
+  else render='bunx -y ccstatusline@latest'; fi
+fi
+printf '%s' "$input" | $render
