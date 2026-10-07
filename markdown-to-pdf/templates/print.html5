@@ -16,12 +16,15 @@ $header-includes$
 $endfor$
 
   <style>
-    /* -apple-system does not resolve in headless Chrome and silently falls back
-       to a serif with no Cyrillic coverage guarantee: pin an explicit stack. */
-    :root { --font-family: $sans-font$; }
-    body, #write, table, th, td, h1, h2, h3, h4, h5, h6, p, li, blockquote,
-    dt, dd, figcaption { font-family: $sans-font$; }
-    code, pre, .md-fences, kbd, samp { font-family: $mono-font$; }
+    /* A fallback stack, not an override: -apple-system does not resolve in headless
+       Chrome and silently falls back to a serif with no Cyrillic coverage guarantee,
+       so a theme that names no font still gets a usable one. :where() has zero
+       specificity, so any rule a theme writes wins -- without it the wrapper would
+       sit later in the cascade and silently beat the theme's own typography. */
+    :where(:root) { --font-family: $sans-font$; }
+    :where(body, #write, table, th, td, h1, h2, h3, h4, h5, h6, p, li, blockquote,
+           dt, dd, figcaption) { font-family: $sans-font$; }
+    :where(code, pre, .md-fences, kbd, samp) { font-family: $mono-font$; }
 
     /* Guard against a stray body width constraint (see the note above). */
     body { max-width: none; margin: 0; padding: 0; }
@@ -67,12 +70,22 @@ $if(heading-reserve)$
          that follows an intro line and jumps to the next page on its own, leaving
          the heading behind on a half-empty one. Themes bind the heading to its
          first sibling; bind the second too, so the intro line cannot separate
-         them. */
-      h1 + * + *, h2 + * + *, h3 + * + *,
-      h4 + * + *, h5 + * + *, h6 + * + * {
+         them. Headings are excluded: when the second sibling is itself a heading,
+         binding it forbids the one break the page legitimately needs, and Chrome
+         answers by splitting a list item's lines instead. */
+      :is(h1, h2, h3, h4, h5, h6) + * + *:not(h1, h2, h3, h4, h5, h6) {
         break-before: avoid;
         page-break-before: avoid;
       }
+    }
+$endif$
+$if(footer)$
+
+    /* Footer text belongs to the document, so only `content` is set here. This
+       block follows the theme, so the theme keeps font, size and colour -- and a
+       theme that styles no margin box simply gets unstyled text. */
+    @media print {
+      @page { @bottom-left { content: "$footer$"; } }
     }
 $endif$
   </style>

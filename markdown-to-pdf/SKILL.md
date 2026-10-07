@@ -28,6 +28,7 @@ scripts/md2pdf --lang ru -o out.pdf report.md
 | `--lang CODE` | sets `<html lang>` — worth setting for correct hyphenation |
 | `--no-page-breaks` | don't start a new page at each top-level heading |
 | `--keep-lines N` | carry a heading to the next page unless about N lines of its section fit beneath it (default 3; `0` disables) |
+| `--footer TEXT` | running text for the page footer's left margin box; also read from a `footer:` field in the document's YAML front matter |
 | `--keep-html` | keep the intermediate HTML next to the PDF (debugging) |
 | `--no-verify` | skip the output checks |
 | `--browser PATH` | override browser detection (also `MD2PDF_BROWSER`) |
@@ -61,6 +62,32 @@ verifier warns when that happens.
 The document's leading `#` heading becomes the title and is **removed from the body**, so it does not
 render twice. YAML front matter is stepped over when looking for it. A document opening with prose, or
 with a setext heading, simply gets no extracted title and is left untouched — pass `--title` to force one.
+
+## Themes with assets
+
+A theme may ship fonts or images beside itself and reference them **relatively**:
+
+```css
+@font-face { font-family: "Golos Text"; src: url(fonts/golos-400.woff2) format('woff2'); }
+```
+
+The CSS is inlined into an HTML file that sits beside the *Markdown*, not beside the theme, so a
+relative `url()` would resolve against the wrong directory and the asset would vanish silently —
+fonts falling back, images simply absent. Those references are rewritten to absolute `file://` URLs
+against the theme's own directory before inlining, and an asset that is not there warns rather than
+failing quietly.
+
+The wrapper's own font stack is declared inside `:where()`, which has zero specificity, so **any**
+font rule a theme writes wins. A theme that names no font still gets a usable one, because
+`-apple-system` does not resolve in headless Chrome and falls back to a serif.
+
+## Page footers
+
+`--footer TEXT`, or a `footer:` field in the document's YAML front matter, fills the `@bottom-left`
+margin box on every page. Nothing is emitted when there is no text, so documents that do not ask for
+a footer render exactly as before. A theme supplies the styling (and usually a `@bottom-right` page
+counter such as `content: "page " counter(page) " of " counter(pages)`); only `content` is overridden
+here, so the theme's font, size and colour survive.
 
 ## Headings are not left stranded
 

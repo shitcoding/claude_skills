@@ -177,8 +177,9 @@ echo "== heading orphan control (--keep-lines)"
 "$MD2PDF" --keep-html -o "$TMP/kl.pdf" "$TMP/basic.md" >/dev/null 2>&1 || fatal "keep-lines export failed"
 klhtml="$(cat "$TMP/kl.html")"
 have "$klhtml" "1rlh" && ok "the heading reserve is emitted by default" || bad "no reserve rule"
-have "$klhtml" "h1 + * + *" \
-  && ok "the heading is bound to its second following sibling too" || bad "no sibling-chain rule"
+have "$klhtml" "+ * + *:not(h1" \
+  && ok "the heading is bound to its second sibling, headings excepted" \
+  || bad "no sibling-chain rule, or it no longer excludes headings"
 
 "$MD2PDF" --keep-html --keep-lines 0 -o "$TMP/kl0.pdf" "$TMP/basic.md" >/dev/null 2>&1 \
   || fatal "--keep-lines 0 export failed"
@@ -229,6 +230,61 @@ if command -v pdftotext >/dev/null && command -v pdfinfo >/dev/null; then
     || bad "the heading was still stranded on page $on"
 else
   echo "  SKIP heading-orphan behaviour: pdftotext/pdfinfo not installed (brew install poppler)"
+fi
+
+echo "== theme assets, fonts and the footer"
+have "$klhtml" ":where(" \
+  && ok "the wrapper's font stack is a zero-specificity fallback" \
+  || bad "the wrapper forces fonts over the theme's own typography"
+
+# A theme that ships assets must work: its relative url() has to be resolved
+# against the THEME's directory, not the directory the HTML is written into.
+mkdir -p "$TMP/thm/assets" || fatal "cannot make the theme dir"
+printf 'x' > "$TMP/thm/assets/f.woff2" || fatal "cannot write the asset"
+cat > "$TMP/thm/t.css" <<'CSS' || fatal "cannot write the theme"
+@font-face { font-family: "T"; src: url(assets/f.woff2) format('woff2'); }
+@media print { @page { size: A4; margin: 10mm; } }
+#write { color: #111; }
+CSS
+"$MD2PDF" --keep-html -t "$TMP/thm/t.css" -o "$TMP/asset.pdf" "$TMP/basic.md" >/dev/null 2>&1 \
+  || fatal "themed export failed"
+ahtml="$(cat "$TMP/asset.html")"
+have "$ahtml" "url(file://" && ok "a theme's relative url() is made absolute" \
+  || bad "relative url() was left alone -- the asset will silently not load"
+have "$ahtml" "url(assets/f.woff2)" \
+  && bad "the relative url() survived verbatim" || ok "the relative form is gone"
+# compare physical paths: md2pdf resolves the asset, and on macOS /var is a
+# symlink to /private/var, so the logical $TMP would never match
+TMP_P="$(cd "$TMP" && pwd -P)"
+have "$ahtml" "$TMP_P/thm/assets/f.woff2" \
+  && ok "it resolves against the theme's own directory" \
+  || bad "resolved against the wrong directory (expected $TMP_P/thm/assets/f.woff2)"
+
+out="$("$MD2PDF" -t "$TMP/thm/missing-asset.css" -o "$TMP/x.pdf" "$TMP/basic.md" 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && ok "a theme path that does not exist is a hard error" \
+  || bad "a missing theme file was accepted (rc=$rc)"
+
+cat > "$TMP/thm/bad.css" <<'CSS' || fatal "cannot write the theme"
+@font-face { font-family: "T"; src: url(assets/nope.woff2) format('woff2'); }
+@media print { @page { size: A4; margin: 10mm; } }
+CSS
+out="$("$MD2PDF" -t "$TMP/thm/bad.css" -o "$TMP/bad.pdf" "$TMP/basic.md" 2>&1)"
+have "$out" "theme asset not found" \
+  && ok "a theme asset that is missing warns instead of failing silently" \
+  || bad "a missing theme asset passed unnoticed"
+
+# the footer is opt-in: no text, no margin box, so existing exports are untouched
+"$MD2PDF" --keep-html -o "$TMP/nofoot.pdf" "$TMP/basic.md" >/dev/null 2>&1 || fatal "export failed"
+have "$(cat "$TMP/nofoot.html")" "@bottom-left" \
+  && bad "a footer box is emitted with no footer text" || ok "no footer text, no margin box"
+
+"$MD2PDF" --footer "RUNNING FOOTER" -o "$TMP/foot.pdf" "$TMP/basic.md" >/dev/null 2>&1 \
+  || fatal "footer export failed"
+if command -v pdftotext >/dev/null; then
+  have "$(pdftotext "$TMP/foot.pdf" - 2>/dev/null)" "RUNNING FOOTER" \
+    && ok "--footer text reaches the rendered page" || bad "the footer text is not in the PDF"
+else
+  echo "  SKIP footer render check: pdftotext not installed"
 fi
 
 echo "== a run of stacked headings is never split across pages"

@@ -143,17 +143,76 @@ def split_title(text):
 
 # ---------------------------------------------------------------------- rendering
 
-def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, lang, keep_lines):
+URL_RE = re.compile(r"url\(\s*([^)]*?)\s*\)", re.I)
+ABSOLUTE = re.compile(r"(?i)^(?:[a-z][a-z0-9+.-]*:|//|#)")
+
+
+def inline_theme(theme_css):
+    """Read the theme, rewriting relative url() references to absolute file:// URLs.
+
+    The CSS is inlined into an HTML file that lives beside the Markdown, not beside
+    the theme, so a relative url() resolves against the wrong directory and the asset
+    vanishes with no error -- fonts quietly fall back, images quietly disappear.
+    Resolving against the theme's own directory is what lets a theme ship its fonts.
+    """
+    base = theme_css.resolve().parent
+    missing = []
+
+    def fix(m):
+        raw = m.group(1)
+        quote = ""
+        if raw[:1] in ("'", '"') and raw[-1:] == raw[:1]:
+            quote, raw = raw[0], raw[1:-1]
+        if not raw or ABSOLUTE.match(raw):
+            return m.group(0)
+        target = (base / raw).resolve()
+        if not target.exists():
+            missing.append(raw)
+        return "url(%s%s%s)" % (quote, target.as_uri(), quote)
+
+    css = URL_RE.sub(fix, theme_css.read_text())
+    for raw in dict.fromkeys(missing):
+        warn("theme asset not found: %s (relative to %s)" % (raw, base))
+    return css
+
+
+def css_string(text):
+    """Escape text for use inside a CSS string literal."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+FOOTER_FIELD = re.compile(r"^footer:[ \t]*(.+?)[ \t]*$", re.M)
+
+
+def front_matter_footer(text):
+    """Read `footer:` from the document's YAML front matter, if it has one."""
+    m = FRONT_MATTER.match(text)
+    if not m:
+        return None
+    f = FOOTER_FIELD.search(text[:m.end()])
+    if not f:
+        return None
+    v = f.group(1)
+    if len(v) > 1 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1]
+    return v or None
+
+
+def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, lang,
+               keep_lines, footer):
     # Scratch inputs go to a temp dir -- only the HTML has to sit beside the source,
     # and the user's directory should not collect debris if this fails.
     scratch = Path(tempfile.mkdtemp(prefix="md2pdf-in-"))
     header = scratch / "header.html"
-    header.write_text("<style>\n%s\n</style>\n" % theme_css.read_text(), encoding="utf-8")
+    header.write_text("<style>\n%s\n</style>\n" % inline_theme(theme_css), encoding="utf-8")
     body_md = scratch / "body.md"
     body_md.write_text(body, encoding="utf-8")
 
     cmd = [
         pandoc, str(body_md), "-f", "markdown", "-t", "html5", "--standalone",
+        # pandoc wraps its output at ~72 columns; a newline inside the CSS string
+        # of a margin box invalidates the declaration and the footer vanishes
+        "--wrap=none",
         "--template", str(SKILL_DIR / "templates/print.html5"),
         # verbatim, unlike -M metadata, which pandoc HTML-escapes and unwraps
         "--include-in-header", str(header),
@@ -174,6 +233,12 @@ def build_html(pandoc, src_md, body, title, theme_css, page_breaks, out_html, la
         cmd += ["-V", "heading-reserve=%d" % (keep_lines + 1)]
     if lang:
         cmd += ["-M", "lang=" + lang]
+    if footer:
+        # Only when asked: a document with no footer must keep rendering exactly as
+        # before, and an @page margin box is emitted only if there is text for it.
+        # -V, not -M: metadata is HTML-escaped, so a quote or & in the footer would
+        # arrive as an entity and break the CSS string it sits in.
+        cmd += ["-V", "footer=" + css_string(footer)]
 
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -202,6 +267,22 @@ def check_html(html_path):
         problems.append("the inlined CSS is HTML-escaped -- child selectors (a > b) "
                         "will not match; the theme must go through --include-in-header")
     return problems
+
+
+def stop(proc, sig):
+    """Signal the browser's process group, tolerating a browser that just exited.
+
+    Chrome can finish on its own between the completeness check and the signal; the
+    group is then gone and killpg raises. The PDF is already written and verified at
+    that point, so a failure here must never fail the export.
+    """
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill() if sig == signal.SIGKILL else proc.terminate()
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def pdf_complete(pdf_path):
@@ -248,11 +329,11 @@ def print_pdf(browser, html_path, pdf_path):
             # --user-data-dir -- verified, and --dump-dom hangs the same way, so it
             # is not about printing and no flag cures it. The PDF is already
             # written and checked complete, so stopping it here loses nothing.
-            os.killpg(proc.pid, signal.SIGTERM)
+            stop(proc, signal.SIGTERM)
             try:
                 proc.wait(10)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                stop(proc, signal.SIGKILL)
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 
@@ -339,6 +420,7 @@ def verify(pdf_path, theme_css):
 def export(src, out, args, pandoc, browser, theme):
     text = src.read_text(encoding="utf-8")
     title, body = split_title(text)
+    footer = args.footer or front_matter_footer(text)
     if args.title:
         # an explicit title still replaces a leading H1 rather than doubling it
         title = args.title
@@ -359,7 +441,7 @@ def export(src, out, args, pandoc, browser, theme):
         warn("%s is not writable; relative images and links will not resolve" % src_dir)
     try:
         build_html(pandoc, src, body, title, theme, not args.no_page_breaks, html,
-                   args.lang, args.keep_lines)
+                   args.lang, args.keep_lines, footer)
         problems = check_html(html)
         if problems:
             die("generated HTML is wrong:\n  - " + "\n  - ".join(problems))
@@ -400,6 +482,9 @@ def main():
     ap.add_argument("--list-themes", action="store_true", help="list resolvable themes and exit")
     ap.add_argument("--title", help="override the leading-H1 title heuristic")
     ap.add_argument("--lang", help="document language, e.g. ru (sets <html lang>)")
+    ap.add_argument("--footer", metavar="TEXT",
+                    help="text for the page footer's left margin box; overrides a "
+                         "`footer:` field in the document's YAML front matter")
     ap.add_argument("--no-page-breaks", action="store_true",
                     help="do not start a new page at each top-level heading")
     ap.add_argument("--keep-lines", type=int, default=3, metavar="N",
