@@ -4,58 +4,23 @@ Custom skills for Claude Code CLI.
 
 ## Skills
 
-### tmux-cli
-
-Run interactive CLI commands (Python/Node REPLs, debuggers, long-running processes) in isolated tmux sessions.
-
-**Features:**
-- Session isolation - all operations run in dedicated `tmux-cli` session
-- Support for REPLs, debuggers (pdb, gdb), test watchers, servers
-- Automatic cleanup of interactive sessions after task completion
-
-**Requirements:**
-- [tmux](https://github.com/tmux/tmux) - terminal multiplexer
-- [tmux-cli](https://github.com/pchalasani/claude-code-tools) - CLI tool for tmux control
-
-**Installation:**
-```bash
-# Install tmux (macOS)
-brew install tmux
-
-# Install tmux (Ubuntu/Debian)
-sudo apt install tmux
-
-# Install tmux-cli via uv
-uv tool install claude-code-tools
-```
-
-**Documentation:** [tmux-cli instructions & FAQ](https://github.com/pchalasani/claude-code-tools/blob/main/docs/tmux-cli-instructions.md)
-
 ### codex-cli-interactive
 
 Run interactive Codex CLI sessions for code review, security audits, refactoring, and multi-turn conversations with OpenAI Codex.
 
 **Features:**
-- Interactive Codex sessions via tmux-cli isolation
+- Headless Codex runs (`codex exec`) through `scripts/consult-codex.sh`; follow-ups with `--mode resume`
 - Configurable model settings (gpt-5-codex, gpt-5)
 - Adjustable reasoning effort and sandbox modes
 - Task-specific presets for common workflows
 - Multi-turn conversation support
 
 **Requirements:**
-- [tmux](https://github.com/tmux/tmux) (v3+) - terminal multiplexer
-- [tmux-cli](https://github.com/pchalasani/claude-code-tools) - CLI tool for tmux control
 - [Codex CLI](https://github.com/openai/codex) - OpenAI's coding assistant CLI
 - OpenAI API credentials configured
 
 **Installation:**
 ```bash
-# Install tmux (macOS)
-brew install tmux
-
-# Install tmux-cli via uv
-uv tool install claude-code-tools
-
 # Install Codex CLI
 npm install -g @openai/codex
 
@@ -162,7 +127,7 @@ Skills must be symlinked to `~/.claude/skills/` directory.
 mkdir -p ~/.claude/skills
 
 # Symlink a skill
-ln -s /path/to/claude_skills/tmux-cli ~/.claude/skills/tmux-cli
+ln -s /path/to/claude_skills/markdown-to-pdf ~/.claude/skills/markdown-to-pdf
 ```
 
 ## Adding New Skills
