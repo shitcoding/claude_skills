@@ -30,6 +30,7 @@ PROMPT_FILE=""
 EPHEMERAL=0
 FAST=0
 ALLOW_FULL_ACCESS=0
+BROWSER=0
 REVIEW_ARGS=()
 
 MODEL=""   # resolved after argument parsing, and only when --model was not supplied
@@ -94,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --ephemeral)   EPHEMERAL=1; shift ;;
         --fast)        FAST=1; shift ;;
         --allow-full-access) ALLOW_FULL_ACCESS=1; shift ;;
+        --browser)     BROWSER=1; shift ;;
         --)            shift; PROMPT="$*"; break ;;
         -*)            echo "Error: unknown option '$1'" >&2; exit 1 ;;
         *)             PROMPT="$*"; break ;;
@@ -175,6 +177,34 @@ if [[ -z "$PROMPT_FD" && "$MODE" != "review" ]]; then
     exit 1
 fi
 
+# --browser: Codex drives this project's browser-testing Chrome. Chrome can't launch
+# inside Codex's sandbox (macOS seatbelt denies the windowserver/launchservices lookups
+# it needs), so it is started HERE, outside, and Codex only connects to its CDP port.
+# Codex then runs read-only plus network (to reach that port) plus $TMPDIR writes
+# (Playwright's mkdtemp) — the project and $HOME stay unwritable. Verified on codex 0.162.
+SANDBOX_ARGS=(-s "$SANDBOX")
+if [[ "$BROWSER" -eq 1 ]]; then
+    if [[ "$SANDBOX" != "read-only" ]]; then
+        echo "Error: --browser sets its own sandbox; drop --sandbox" >&2
+        exit 1
+    fi
+    BT="$HOME/.agents/skills/browser-testing/scripts/bt"
+    if [[ ! -x "$BT" ]]; then
+        echo "Error: --browser needs the browser-testing skill linked at $BT" >&2
+        exit 1
+    fi
+    if ! "$BT" --start --ensure >&2; then
+        echo "Error: could not start this project's browser-testing Chrome" >&2
+        exit 1
+    fi
+    # Screenshots default to the skill's own dir, which is read-only in there.
+    export BT_SCREENSHOT_DIR="${TMPDIR:-/tmp}/codex-bt-screenshots"
+    SANDBOX_ARGS=(-c 'default_permissions="codex-browser"'
+        -c 'permissions.codex-browser.extends=":read-only"'
+        -c 'permissions.codex-browser.filesystem={":tmpdir"="write"}'
+        -c 'permissions.codex-browser.network.enabled=true')
+fi
+
 # --- Temp files for output ---
 RESULT_FILE=$(mktemp)
 ERR_FILE=$(mktemp)
@@ -207,7 +237,7 @@ case "$MODE" in
         CMD=(codex exec
             --json
             -c "model_reasoning_effort=\"$EFFORT\""
-            -s "$SANDBOX"
+            "${SANDBOX_ARGS[@]}"
             --disable hooks
             -o "$RESULT_FILE")
         [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
@@ -229,6 +259,7 @@ case "$MODE" in
         [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
         [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
         [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
+        [[ "$BROWSER" -eq 1 ]] && CMD+=("${SANDBOX_ARGS[@]}")
         CMD+=(-)
         ;;
     review)
@@ -255,7 +286,7 @@ case "$MODE" in
             CMD=(codex exec
                 --json
                 -c "model_reasoning_effort=\"$EFFORT\""
-                -s "$SANDBOX"
+                "${SANDBOX_ARGS[@]}"
                 --disable hooks
                 -o "$RESULT_FILE")
             [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
@@ -271,6 +302,7 @@ case "$MODE" in
             [[ -n "$MODEL" ]] && CMD+=(-m "$MODEL")
             [[ "$FAST" -eq 1 ]] && CMD+=(-c 'service_tier="fast"')
             [[ "$EPHEMERAL" -eq 1 ]] && CMD+=(--ephemeral)
+            [[ "$BROWSER" -eq 1 ]] && CMD+=("${SANDBOX_ARGS[@]}")
             if [[ ${#REVIEW_ARGS[@]} -gt 0 ]]; then
                 CMD+=("${REVIEW_ARGS[@]}")
             fi

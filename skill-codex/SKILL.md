@@ -133,6 +133,21 @@ headless `codex exec`; treat the label as a request, not a promise.
 
 Sandbox only applies to `--mode ask` (plain `codex exec`). Review and resume modes use Codex defaults.
 
+**Browser reviews (`--browser`)** — when Codex should look at the running site itself (UI, flows,
+console errors, a11y), not just the code. Works in every mode:
+```bash
+"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --browser --prompt-file /tmp/codex-prompt-xxx.md
+"$HOME/.claude/skills/codex-cli-interactive/scripts/consult-codex.sh" --browser --mode review --uncommitted
+```
+The script first starts this project's browser-testing Chrome **outside** Codex's sandbox (Chrome
+can't launch inside it), then runs Codex **read-only plus network plus `$TMPDIR`**: it can drive
+that Chrome through the browser-testing skill but can't write the project or `$HOME`. It shares
+the project's profile, so Codex acts with the project's logins, and network is open to its
+commands. Tell Codex in the prompt which URLs to check. Needs the browser-testing skill linked
+at `~/.agents/skills/browser-testing` (where Codex finds skills). Not combinable with `--sandbox`.
+Chrome keeps running afterwards, as with browser-testing itself — `bt --stop` when the browser
+work is done. Screenshots land in `$TMPDIR/codex-bt-screenshots/`.
+
 **Review scope + custom prompt (codex ≥0.130):** `--uncommitted`/`--base`/`--commit` are mutually exclusive with a custom prompt in `codex exec review`. The script handles this automatically — when both are given, it reroutes through ask mode with a combined prompt that tells Codex to inspect the same git scope itself (a stderr note says so). No action needed.
 
 ## Notes
