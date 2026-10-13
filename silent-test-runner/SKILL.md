@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 run_silent() {
-    local description="$1"
+    local description="${1}"
     shift
     local tmp_file
     tmp_file=$(mktemp)
@@ -144,7 +144,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 run_silent() {
-    local description="$1"
+    local description="${1}"
     shift
     local tmp_file
     tmp_file=$(mktemp)
