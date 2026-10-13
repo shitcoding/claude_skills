@@ -65,20 +65,36 @@ our_browser_pids() {
     done
 }
 
+# The browser id in /json/version is new on every Chrome launch, so "port + id",
+# recorded once ownership was proven from the process list, identifies our browser
+# later without one. A sandbox can't list processes (Codex: "pgrep: Cannot get
+# process list") but can read this file — that is how a sandboxed agent uses a
+# Chrome started outside its sandbox.
+OWNER_MARK="$CHROME_PROFILE/.bt-owner"
+cdp_id() {
+    curl -fsS --max-time 2 "$CDP_URL/json/version" 2>/dev/null \
+        | sed -n 's#.*/devtools/browser/\([0-9a-fA-F-]*\).*#\1#p'
+}
+
 # Does OUR browser own CDP_PORT? Ours = a browser process launched with our profile
 # AND this port on its command line (flag order is ours, see CHROME_FLAGS). lsof
 # then vetoes the one case the command line can't see: our Chrome lost the bind
 # race and a foreign browser is the one actually listening. An empty lsof answer
 # while something clearly listens means lsof failed, not "foreign".
 port_is_ours() {
-    local ours owner
+    local ours owner id
+    id="$(cdp_id)"
     ours="$(pgrep -f "$OWN_RE" 2>/dev/null || true)"
-    [[ -n "$ours" ]] || return 1
+    if [[ -z "$ours" ]]; then
+        [[ -n "$id" && "$(cat "$OWNER_MARK" 2>/dev/null)" == "$CDP_PORT $id" ]]
+        return
+    fi
     if command -v lsof &>/dev/null; then
         owner="$(lsof -nP -iTCP@127.0.0.1:"$CDP_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
-        [[ -z "$owner" ]] || grep -qx "$owner" <<< "$ours"
+        [[ -z "$owner" ]] || grep -qx "$owner" <<< "$ours" || return 1
     fi
     # ponytail: without lsof the bind-race case attaches to the foreign browser.
+    [[ -z "$id" ]] || { echo "$CDP_PORT $id" > "$OWNER_MARK"; } 2>/dev/null || true
 }
 
 refuse_foreign() {

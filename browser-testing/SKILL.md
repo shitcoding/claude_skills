@@ -210,6 +210,12 @@ Logins are **per project** (each project has its own profile): a site logged in 
 must be logged in once more for project B. The same applies to a git worktree — it is a
 different root, so it gets its own profile.
 
+**Inside an agent sandbox (Codex):** Chrome cannot launch there — macOS's sandbox denies the
+system services it needs. Run `bt --start` **outside** the sandbox first; the sandboxed agent
+then drives that Chrome over its CDP port (it needs network access and a writable `$TMPDIR`).
+It can't list processes to prove the browser is its own, so it reads `.bt-owner` in the
+profile instead: port + browser id, recorded whenever ownership was proven outside.
+
 ## Configuration
 
 All optional — defaults work out of the box:

@@ -122,6 +122,16 @@ check "foreign profile on our port is refused (bt URL)" 'grep -q "not.*running o
 check "--status names it NOT OURS" '[[ "$(BT_CHROME_PROFILE="$TMP/other" "$BT" --status)" == *"NOT OURS"* ]]'
 check "--stop from the foreign profile leaves our Chrome alone" '[[ "$(BT_CHROME_PROFILE="$TMP/other" "$BT" --stop)" == *"leaving it alone"* ]] && curl -fsS "http://127.0.0.1:$PORT/json/version" >/dev/null'
 
+# No process list (a Codex sandbox: "pgrep: Cannot get process list") → the owner
+# mark recorded at launch must prove ours, and must prove nothing for anyone else.
+mkdir -p "$TMP/nops" && printf '#!/bin/sh\necho "pgrep: Cannot get process list" >&2; exit 3\n' > "$TMP/nops/pgrep" && chmod +x "$TMP/nops/pgrep"
+check "launch records the owner mark (port + browser id)" '[[ "$(cat "$TMP/prof/.bt-owner")" == "$PORT "?* ]]'
+check "no process list: the mark proves ours" '[[ "$(PATH="$TMP/nops:$PATH" "$BT" --status)" == *"(ours)"* ]]'
+check "no process list: a foreign profile is still refused" '[[ "$(PATH="$TMP/nops:$PATH" BT_CHROME_PROFILE="$TMP/other" "$BT" --status)" == *"NOT OURS"* ]]'
+cp "$TMP/prof/.bt-owner" "$TMP/mark" && echo "$PORT 00000000-stale" > "$TMP/prof/.bt-owner"
+check "no process list: a stale mark (old browser id) proves nothing" '[[ "$(PATH="$TMP/nops:$PATH" "$BT" --status)" == *"NOT OURS"* ]]'
+mv "$TMP/mark" "$TMP/prof/.bt-owner"
+
 out="$("$BT" --stop 2>&1)"
 check "--stop closes gracefully via CDP" '[[ "$out" == *"closed gracefully"* ]]'
 check "no process left on the profile" '[[ -z "$(pgrep -f "user-data-dir=$TMP/prof")" ]]'
